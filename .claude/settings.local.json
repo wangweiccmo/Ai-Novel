@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -r \"DeepSeek\\\\|deepseek\\\\|DeepSeek\\\\|''''DeepSeek''''\" /c/AI/w/Ai-Novel/backend --include=*.py)",
+      "Bash(xargs grep:*)"
+    ]
+  }
+}

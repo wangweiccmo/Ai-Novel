@@ -72,6 +72,8 @@ def llm_test(
         base_url = base_url or "https://api.anthropic.com"
     elif body.provider == "gemini":
         base_url = base_url or "https://generativelanguage.googleapis.com"
+    elif body.provider == "deepseek":
+        base_url = base_url or "https://api.deepseek.com"
     elif body.provider in ("openai_compatible", "openai_responses_compatible") and not base_url:
         raise AppError(code="LLM_CONFIG_ERROR", message=f"{body.provider} 必须填写 base_url", status_code=400)
 

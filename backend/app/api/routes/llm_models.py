@@ -196,7 +196,7 @@ def list_llm_models(
             raise
 
     timeout = httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=5.0)
-    if provider in ("openai", "openai_responses", "openai_compatible", "openai_responses_compatible"):
+    if provider in ("openai", "openai_responses", "openai_compatible", "openai_responses_compatible", "deepseek"):
         models = _list_openai_like_models(provider=provider, base_url=effective_base_url or "", api_key=api_key, timeout=timeout)
     elif provider == "anthropic":
         models = _list_anthropic_models(provider=provider, base_url=effective_base_url or "", api_key=api_key, timeout=timeout)

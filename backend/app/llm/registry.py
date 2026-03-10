@@ -150,6 +150,14 @@ PROVIDER_CONTRACTS: tuple[LLMProviderContract, ...] = (
         supported_params=frozenset({"temperature", "top_p", "max_tokens", "top_k", "stop"}),
         aliases=frozenset({"google"}),
     ),
+    LLMProviderContract(
+        key="deepseek",
+        default_base_url="https://api.deepseek.com",
+        requires_base_url=False,
+        allows_unknown_models=True,
+        recommended_max_tokens=8192,
+        supported_params=frozenset({"temperature", "top_p", "max_tokens", "presence_penalty", "frequency_penalty", "stop"}),
+    ),
 )
 
 MODEL_CONTRACTS: tuple[LLMModelContract, ...] = (
@@ -247,6 +255,18 @@ MODEL_CONTRACTS: tuple[LLMModelContract, ...] = (
         model="gemini-1.5-flash",
         prefix_aliases=frozenset({"gemini-1.5-flash"}),
         capabilities=LLMCapabilitySpec(supports_json_mode=True, supports_tool_calling=True, supports_vision=True),
+        pricing=LLMPricingSpec(),
+    ),
+    LLMModelContract(
+        provider="deepseek",
+        model="deepseek-chat",
+        capabilities=LLMCapabilitySpec(max_output_tokens=8192, max_context_tokens=65536, supports_json_mode=True, supports_tool_calling=True),
+        pricing=LLMPricingSpec(),
+    ),
+    LLMModelContract(
+        provider="deepseek",
+        model="deepseek-reasoner",
+        capabilities=LLMCapabilitySpec(max_output_tokens=16384, max_context_tokens=65536, supports_json_mode=False, supports_tool_calling=False),
         pricing=LLMPricingSpec(),
     ),
 )

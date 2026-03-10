@@ -128,6 +128,7 @@ function providerLabel(provider: LLMProvider): string {
   if (provider === "openai_compatible") return "OpenAI Compatible Chat";
   if (provider === "openai_responses_compatible") return "OpenAI Compatible Responses";
   if (provider === "anthropic") return "Anthropic";
+  if (provider === "deepseek") return "DeepSeek";
   return "Gemini";
 }
 
@@ -206,6 +207,7 @@ function ModuleEditor(props: ModuleEditorProps) {
             <option value="openai_responses_compatible">openai_responses_compatible（中转 /v1/responses）</option>
             <option value="anthropic">anthropic（Claude）</option>
             <option value="gemini">gemini</option>
+            <option value="deepseek">deepseek（DeepSeek）</option>
           </select>
           <div className="text-[11px] text-subtext">
             当前：{providerLabel(props.form.provider)}。兼容网关通常需要可访问的 `base_url`。
@@ -250,7 +252,7 @@ function ModuleEditor(props: ModuleEditorProps) {
             onChange={(e) => props.setForm((v) => ({ ...v, base_url: e.target.value }))}
           />
           <div className="text-[11px] text-subtext">
-            OpenAI / OpenAI-compatible 一般包含 `/v1`；Anthropic/Gemini 一般为 host。
+            OpenAI / OpenAI-compatible 一般包含 `/v1`；Anthropic/Gemini 一般为 host；DeepSeek 默认 `https://api.deepseek.com`。
           </div>
         </label>
       </div>
@@ -284,7 +286,7 @@ function ModuleEditor(props: ModuleEditorProps) {
             {tokenHint ? <div className="text-[11px] text-subtext">{tokenHint}</div> : null}
           </label>
 
-          {props.form.provider === "openai" || props.form.provider === "openai_compatible" ? (
+          {props.form.provider === "openai" || props.form.provider === "openai_compatible" || props.form.provider === "deepseek" ? (
             <>
               <label className="grid gap-1">
                 <span className="text-xs text-subtext">presence_penalty</span>

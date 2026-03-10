@@ -24,6 +24,8 @@ def _filter_params(provider: str, params: dict[str, Any]) -> tuple[dict[str, Any
         supported = {"temperature", "top_p", "max_tokens", "top_k", "stop"}
     elif provider == "gemini":
         supported = {"temperature", "top_p", "max_tokens", "top_k", "stop"}
+    elif provider == "deepseek":
+        supported = {"temperature", "top_p", "max_tokens", "presence_penalty", "frequency_penalty", "stop"}
     else:
         supported = set()
 
@@ -202,6 +204,23 @@ def call_llm_stream_messages(
                 extra=extra,
             )
 
+        if provider == "deepseek":
+            from app.llm.providers.openai_chat import call_openai_chat_completions_stream
+
+            return call_openai_chat_completions_stream(
+                client=client,
+                provider=provider,
+                base_url=base_url,
+                model=model,
+                api_key=api_key,
+                messages=messages,
+                filtered_params=filtered_params,
+                dropped_params=dropped,
+                timeout=timeout,
+                start=start,
+                extra=extra,
+            )
+
         raise AppError(code="LLM_CONFIG_ERROR", message="不支持的 provider", status_code=400)
     except AppError as exc:
         _attach_llm_error_context(
@@ -324,6 +343,23 @@ def call_llm_messages(
 
             return call_gemini_generate_content(
                 client=client,
+                base_url=base_url,
+                model=model,
+                api_key=api_key,
+                messages=messages,
+                filtered_params=filtered_params,
+                dropped_params=dropped,
+                timeout=timeout,
+                start=start,
+                extra=extra,
+            )
+
+        if provider == "deepseek":
+            from app.llm.providers.openai_chat import call_openai_chat_completions
+
+            return call_openai_chat_completions(
+                client=client,
+                provider=provider,
                 base_url=base_url,
                 model=model,
                 api_key=api_key,

@@ -9,4 +9,5 @@ LLMProvider = Literal[
     "openai_responses_compatible",
     "anthropic",
     "gemini",
+    "deepseek",
 ]
