@@ -20,7 +20,7 @@ from app.services.generation_service import call_llm_and_record, with_param_over
 from app.services.llm_task_preset_resolver import resolve_task_llm_config
 from app.services.memory_update_service import propose_chapter_memory_change_set
 from app.services.output_contracts import contract_for_task
-from app.services.plot_analysis_service import apply_chapter_analysis as apply_plot_analysis
+from app.services.plot_analysis_service import apply_chapter_analysis as apply_plot_analysis, compute_quality_scores
 from app.services.prompt_presets import (
     _ensure_default_preset_from_resource,
     ensure_default_chapter_analyze_preset,
@@ -72,6 +72,7 @@ def analyze_chapter(
     prompt_render_log_json: str | None = None
     llm_call = None
     project_id = ""
+    quality_content_md = ""
 
     auto_memupd = bool(getattr(body, "auto_propose_memory_update", False))
     memupd_focus = str(getattr(body, "memory_update_focus", "") or "").strip()
@@ -92,6 +93,7 @@ def analyze_chapter(
         project = db.get(Project, project_id)
         if project is None:
             raise AppError.not_found()
+        quality_content_md = str(body.draft_content_md if body.draft_content_md is not None else (chapter.content_md or ""))
 
         resolved_analyze = _resolve_task_llm_for_call(
             db=db,
@@ -202,6 +204,8 @@ def analyze_chapter(
         data["warnings"] = warnings
     if parse_error is not None:
         data["parse_error"] = parse_error
+    if parse_error is None and isinstance(data.get("analysis"), dict):
+        data["quality_scores"] = compute_quality_scores(analysis=data["analysis"], content_md=quality_content_md)
     if llm_result.finish_reason is not None:
         data["finish_reason"] = llm_result.finish_reason
 

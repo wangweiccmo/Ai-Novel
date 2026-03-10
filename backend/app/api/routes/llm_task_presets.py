@@ -51,6 +51,10 @@ def _catalog_out() -> list[dict]:
             "label": item.label,
             "group": item.group,
             "description": item.description,
+            "recommended_provider": item.recommended_provider,
+            "recommended_model": item.recommended_model,
+            "recommended_note": item.recommended_note,
+            "cost_tier": item.cost_tier,
         }
         for item in LLM_TASK_CATALOG
     ]

@@ -140,8 +140,29 @@ export type ChapterAnalysis = {
   overall_notes?: string;
 };
 
+export type QualityScores = {
+  schema_version?: string;
+  method?: string;
+  word_count?: number;
+  counts?: {
+    hooks?: number;
+    foreshadows?: number;
+    plot_points?: number;
+    suggestions?: number;
+    summary_present?: number;
+  };
+  scores?: {
+    overall?: number;
+    coherence?: number;
+    engagement?: number;
+    pacing?: number;
+  };
+  report_md?: string;
+};
+
 export type ChapterAnalyzeResult = {
   analysis: ChapterAnalysis;
+  quality_scores?: QualityScores;
   raw_output?: string;
   raw_json?: string;
   warnings?: string[];

@@ -14,6 +14,7 @@ type ExportForm = {
   include_characters: boolean;
   include_outline: boolean;
   chapters: "all" | "done";
+  template: "default" | "publisher" | "web";
 };
 
 type AtelierOptionControlProps = {
@@ -70,6 +71,7 @@ export function ExportPage() {
     include_characters: true,
     include_outline: true,
     chapters: "all",
+    template: "default",
   });
 
   const url = useMemo(() => {
@@ -82,6 +84,29 @@ export function ExportPage() {
     return `/api/projects/${projectId}/export/markdown?${qs.toString()}`;
   }, [form, projectId]);
 
+  const applyTemplate = useCallback(
+    (content: string): string => {
+      if (form.template === "publisher") {
+        const lines = content.split("\n");
+        const out: string[] = [];
+        let firstChapter = true;
+        for (const line of lines) {
+          if (line.startsWith("### 第")) {
+            if (!firstChapter) out.push("\n---\n");
+            firstChapter = false;
+          }
+          out.push(line);
+        }
+        return out.join("\n");
+      }
+      if (form.template === "web") {
+        return content.replaceAll("\n---\n", "\n").replaceAll("### 第", "## 第");
+      }
+      return content;
+    },
+    [form.template],
+  );
+
   const doExport = useCallback(async (): Promise<boolean> => {
     if (!projectId) return false;
     if (!url) return false;
@@ -89,11 +114,14 @@ export function ExportPage() {
     setExporting(true);
     try {
       const { filename, content } = await apiDownloadMarkdown(url);
-      const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+      const finalContent = applyTemplate(content);
+      const blob = new Blob([finalContent], { type: "text/markdown;charset=utf-8" });
       const objectUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = objectUrl;
-      a.download = filename || "ainovel.md";
+      const suffix =
+        form.template === "publisher" ? "publisher" : form.template === "web" ? "webnovel" : "default";
+      a.download = filename ? filename.replace(/\.md$/i, `.${suffix}.md`) : `ainovel.${suffix}.md`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -109,7 +137,7 @@ export function ExportPage() {
     } finally {
       setExporting(false);
     }
-  }, [bumpWizardLocal, exporting, projectId, toast, url]);
+  }, [applyTemplate, bumpWizardLocal, exporting, form.template, projectId, toast, url]);
 
   return (
     <div className="grid gap-6 pb-24">
@@ -134,6 +162,46 @@ export function ExportPage() {
         {exporting ? <GhostwriterIndicator className="mt-4" label="导出中：正在生成并下载 Markdown…" /> : null}
 
         <div className="mt-5 grid gap-4">
+          <div className="grid gap-2">
+            <div className="text-xs text-subtext">导出模板</div>
+            <AtelierOptionControl
+              checked={form.template === "default"}
+              disabled={exporting}
+              name="template"
+              onCheckedChange={(next) => {
+                if (!next) return;
+                setForm((v) => ({ ...v, template: "default" }));
+              }}
+              type="radio"
+            >
+              通用（默认）
+            </AtelierOptionControl>
+            <AtelierOptionControl
+              checked={form.template === "publisher"}
+              disabled={exporting}
+              name="template"
+              onCheckedChange={(next) => {
+                if (!next) return;
+                setForm((v) => ({ ...v, template: "publisher" }));
+              }}
+              type="radio"
+            >
+              出版社排版（章节分隔线）
+            </AtelierOptionControl>
+            <AtelierOptionControl
+              checked={form.template === "web"}
+              disabled={exporting}
+              name="template"
+              onCheckedChange={(next) => {
+                if (!next) return;
+                setForm((v) => ({ ...v, template: "web" }));
+              }}
+              type="radio"
+            >
+              网文平台（更强调章节标题）
+            </AtelierOptionControl>
+          </div>
+
           <div className="grid gap-2">
             <div className="text-xs text-subtext">包含内容</div>
             <AtelierOptionControl

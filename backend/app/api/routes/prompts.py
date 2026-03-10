@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.api.deps import DbDep, UserIdDep, require_project_editor
@@ -10,6 +11,7 @@ from app.core.errors import AppError, ok_payload
 from app.db.utils import new_id, utc_now
 from app.models.prompt_block import PromptBlock
 from app.models.prompt_preset import PromptPreset
+from app.models.prompt_preset_version import PromptPresetVersion
 from app.models.llm_preset import LLMPreset
 from app.schemas.prompt_presets import (
     PromptBlockCreate,
@@ -44,6 +46,7 @@ from app.services.prompt_presets import (
     reset_prompt_preset_to_default_resource,
     render_preset_for_task,
 )
+from app.services.prompt_version_service import record_prompt_preset_version, rollback_prompt_preset_to_version
 from app.services.prompt_task_catalog import PROMPT_TASK_SET
 
 router = APIRouter()
@@ -179,6 +182,94 @@ def get_prompt_preset(request: Request, db: DbDep, user_id: UserIdDep, preset_id
     )
 
 
+@router.get("/prompt_presets/{preset_id}/versions")
+def list_prompt_preset_versions(
+    request: Request,
+    db: DbDep,
+    user_id: UserIdDep,
+    preset_id: str,
+    limit: int = Query(default=30, ge=1, le=200),
+) -> dict:
+    request_id = request.state.request_id
+    preset = db.get(PromptPreset, preset_id)
+    if preset is None:
+        raise AppError.not_found()
+    require_project_editor(db, project_id=preset.project_id, user_id=user_id)
+
+    rows = (
+        db.execute(
+            select(PromptPresetVersion)
+            .where(PromptPresetVersion.preset_id == preset_id)
+            .order_by(PromptPresetVersion.version.desc(), PromptPresetVersion.created_at.desc())
+            .limit(int(limit))
+        )
+        .scalars()
+        .all()
+    )
+    items = [
+        {
+            "id": r.id,
+            "project_id": r.project_id,
+            "preset_id": r.preset_id,
+            "actor_user_id": r.actor_user_id,
+            "version": int(r.version),
+            "preset_version": int(getattr(r, "preset_version", 1) or 1),
+            "note": r.note,
+            "created_at": r.created_at,
+        }
+        for r in rows
+    ]
+    return ok_payload(request_id=request_id, data={"versions": items})
+
+
+class PromptPresetRollbackRequest(BaseModel):
+    version_id: str | None = Field(default=None, max_length=36)
+    version: int | None = Field(default=None, ge=1)
+
+
+@router.post("/prompt_presets/{preset_id}/rollback")
+def rollback_prompt_preset(
+    request: Request,
+    db: DbDep,
+    user_id: UserIdDep,
+    preset_id: str,
+    body: PromptPresetRollbackRequest,
+) -> dict:
+    request_id = request.state.request_id
+    preset = db.get(PromptPreset, preset_id)
+    if preset is None:
+        raise AppError.not_found()
+    require_project_editor(db, project_id=preset.project_id, user_id=user_id)
+
+    version_row = None
+    if body.version_id:
+        version_row = db.get(PromptPresetVersion, str(body.version_id))
+    if version_row is None and body.version is not None:
+        version_row = (
+            db.execute(
+                select(PromptPresetVersion)
+                .where(PromptPresetVersion.preset_id == preset_id, PromptPresetVersion.version == int(body.version))
+            )
+            .scalars()
+            .first()
+        )
+    if version_row is None:
+        raise AppError.validation(message="找不到指定的版本")
+
+    rollback_prompt_preset_to_version(db=db, preset=preset, version_row=version_row, actor_user_id=user_id)
+    db.commit()
+
+    blocks = (
+        db.execute(select(PromptBlock).where(PromptBlock.preset_id == preset_id).order_by(PromptBlock.injection_order.asc()))
+        .scalars()
+        .all()
+    )
+    return ok_payload(
+        request_id=request_id,
+        data={"preset": _preset_to_out(preset), "blocks": [_block_to_out(b) for b in blocks]},
+    )
+
+
 @router.put("/prompt_presets/{preset_id}")
 def update_prompt_preset(request: Request, db: DbDep, user_id: UserIdDep, preset_id: str, body: PromptPresetUpdate) -> dict:
     request_id = request.state.request_id
@@ -186,6 +277,8 @@ def update_prompt_preset(request: Request, db: DbDep, user_id: UserIdDep, preset
     if preset is None:
         raise AppError.not_found()
     require_project_editor(db, project_id=preset.project_id, user_id=user_id)
+
+    record_prompt_preset_version(db=db, preset=preset, actor_user_id=user_id, note="update_preset")
 
     if body.name is not None:
         preset.name = body.name
@@ -211,6 +304,7 @@ def reset_prompt_preset_to_default(request: Request, db: DbDep, user_id: UserIdD
         raise AppError.not_found()
     require_project_editor(db, project_id=preset.project_id, user_id=user_id)
 
+    record_prompt_preset_version(db=db, preset=preset, actor_user_id=user_id, note="reset_preset_to_default")
     preset = reset_prompt_preset_to_default_resource(db, preset=preset)
     blocks = (
         db.execute(select(PromptBlock).where(PromptBlock.preset_id == preset.id).order_by(PromptBlock.injection_order.asc()))
@@ -239,6 +333,7 @@ def create_prompt_block(request: Request, db: DbDep, user_id: UserIdDep, preset_
     if preset is None:
         raise AppError.not_found()
     require_project_editor(db, project_id=preset.project_id, user_id=user_id)
+    record_prompt_preset_version(db=db, preset=preset, actor_user_id=user_id, note="create_block")
     row = PromptBlock(
         id=new_id(),
         preset_id=preset_id,
@@ -274,6 +369,7 @@ def update_prompt_block(request: Request, db: DbDep, user_id: UserIdDep, block_i
         raise AppError.not_found()
     require_project_editor(db, project_id=preset.project_id, user_id=user_id)
 
+    record_prompt_preset_version(db=db, preset=preset, actor_user_id=user_id, note="update_block")
     if body.identifier is not None:
         block.identifier = body.identifier
     if body.name is not None:
@@ -318,6 +414,7 @@ def reset_prompt_block_to_default(request: Request, db: DbDep, user_id: UserIdDe
         raise AppError.not_found()
     require_project_editor(db, project_id=preset.project_id, user_id=user_id)
 
+    record_prompt_preset_version(db=db, preset=preset, actor_user_id=user_id, note="reset_block_to_default")
     block = reset_prompt_block_to_default_resource(db, preset=preset, block=block)
     return ok_payload(request_id=request_id, data={"block": _block_to_out(block)})
 
@@ -333,6 +430,7 @@ def delete_prompt_block(request: Request, db: DbDep, user_id: UserIdDep, block_i
         raise AppError.not_found()
     require_project_editor(db, project_id=preset.project_id, user_id=user_id)
 
+    record_prompt_preset_version(db=db, preset=preset, actor_user_id=user_id, note="delete_block")
     db.delete(block)
     preset.updated_at = utc_now()
     db.commit()
@@ -353,6 +451,7 @@ def reorder_prompt_blocks(
         raise AppError.not_found()
     require_project_editor(db, project_id=preset.project_id, user_id=user_id)
 
+    record_prompt_preset_version(db=db, preset=preset, actor_user_id=user_id, note="reorder_blocks")
     blocks = (
         db.execute(select(PromptBlock).where(PromptBlock.preset_id == preset_id).order_by(PromptBlock.injection_order.asc()))
         .scalars()

@@ -9,7 +9,7 @@ from app.schemas.base import ORMModel
 from app.schemas.limits import MAX_BULK_CREATE_CHAPTERS, MAX_MD_CHARS, MAX_TEXT_CHARS
 
 
-ChapterStatus = Literal["planned", "drafting", "done"]
+ChapterStatus = Literal["planned", "drafting", "proofreading", "done"]
 
 
 class ChapterCreate(BaseModel):

@@ -66,6 +66,34 @@ export function SearchPage() {
     return selected.length ? selected : null;
   }, [sourcesState]);
 
+  const queryTokens = useMemo(() => {
+    return query
+      .trim()
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .slice(0, 10);
+  }, [query]);
+
+  const highlightText = useCallback((text: string) => {
+    if (!text) return text;
+    if (queryTokens.length === 0) return text;
+    const escaped = queryTokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const pattern = new RegExp(`(${escaped.join("|")})`, "gi");
+    const parts = text.split(pattern);
+    if (parts.length === 1) return text;
+    return parts.map((part, index) => {
+      const isMatch = queryTokens.some((t) => part.toLowerCase() === t.toLowerCase());
+      return isMatch ? (
+        <mark key={`${part}-${index}`} className="rounded-atelier bg-accent/15 px-1 text-ink">
+          {part}
+        </mark>
+      ) : (
+        <span key={`${part}-${index}`}>{part}</span>
+      );
+    });
+  }, [queryTokens]);
+
   const runQuery = useCallback(
     async (opts?: { append?: boolean }) => {
       if (!projectId) return;
@@ -291,7 +319,9 @@ export function SearchPage() {
               <div key={`${it.source_type}:${it.source_id}`} className="panel p-3">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <div className="truncate text-sm font-medium text-ink">{it.title || it.source_id}</div>
+                    <div className="truncate text-sm font-medium text-ink">
+                      {highlightText(it.title || it.source_id)}
+                    </div>
                     <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-subtext">
                       <span>{sourceLabel(it.source_type)}</span>
                       <span className="font-mono">{it.source_type}</span>
@@ -337,7 +367,7 @@ export function SearchPage() {
                 </div>
                 {it.snippet ? (
                   <div className="mt-2 whitespace-pre-wrap break-words rounded-atelier border border-border bg-canvas px-3 py-2 text-xs text-ink">
-                    {it.snippet}
+                    {highlightText(it.snippet)}
                   </div>
                 ) : null}
               </div>

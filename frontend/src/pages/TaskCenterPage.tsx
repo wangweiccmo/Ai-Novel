@@ -91,12 +91,46 @@ type HealthData = {
   worker_hint?: string | null;
 };
 
+type MetricsSummary = {
+  total: number;
+  queued: number;
+  running: number;
+  done: number;
+  failed: number;
+  success_rate: number | null;
+  avg_queue_ms: number | null;
+  avg_run_ms: number | null;
+};
+
+type MetricsOverview = {
+  window_hours: number;
+  window_start: string;
+  as_of: string;
+  project_tasks: MetricsSummary;
+  memory_tasks: MetricsSummary;
+  imports: MetricsSummary;
+};
+
+function formatDuration(ms: number | null | undefined): string {
+  if (ms == null) return "-";
+  if (!Number.isFinite(ms)) return "-";
+  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`;
+  return `${Math.round(ms / 100) / 10}s`;
+}
+
+function formatPercent(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "-";
+  return `${Math.round(value * 1000) / 10}%`;
+}
+
 export function TaskCenterPage() {
   const { projectId } = useParams();
   const toast = useToast();
   const [searchParams] = useSearchParams();
 
   const [health, setHealth] = useState<{ data: HealthData; requestId: string } | null>(null);
+  const [metrics, setMetrics] = useState<{ data: MetricsOverview; requestId: string } | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
 
   const [changeSetStatus, setChangeSetStatus] = useState<string>("all");
   const [taskStatus, setTaskStatus] = useState<string>("all");
@@ -124,6 +158,28 @@ export function TaskCenterPage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    setMetricsLoading(true);
+    apiJson<MetricsOverview>(`/api/projects/${projectId}/metrics/overview`)
+      .then((res) => {
+        if (cancelled) return;
+        setMetrics({ data: res.data, requestId: res.request_id });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setMetrics(null);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setMetricsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   const loadChangeSets = useCallback(
     async (id: string): Promise<PagedResult<MemoryChangeSetSummary>> => {
@@ -231,6 +287,15 @@ export function TaskCenterPage() {
     return out;
   }, [projectTasks]);
 
+  const metricCards = useMemo(() => {
+    if (!metrics) return [];
+    return [
+      { key: "project_tasks", label: "项目任务", data: metrics.data.project_tasks },
+      { key: "memory_tasks", label: "记忆任务", data: metrics.data.memory_tasks },
+      { key: "imports", label: "导入任务", data: metrics.data.imports },
+    ];
+  }, [metrics]);
+
   const [selected, setSelected] = useState<
     | { kind: "change_set"; item: MemoryChangeSetSummary }
     | { kind: "task"; item: MemoryTaskSummary }
@@ -254,11 +319,27 @@ export function TaskCenterPage() {
     return "项目任务详情";
   }, [selected]);
 
+  const refreshMetrics = useCallback(() => {
+    if (!projectId) return;
+    setMetricsLoading(true);
+    apiJson<MetricsOverview>(`/api/projects/${projectId}/metrics/overview`)
+      .then((res) => {
+        setMetrics({ data: res.data, requestId: res.request_id });
+      })
+      .catch(() => {
+        setMetrics(null);
+      })
+      .finally(() => {
+        setMetricsLoading(false);
+      });
+  }, [projectId]);
+
   const refreshAll = useCallback(() => {
     void refreshChangeSets();
     void refreshTasks();
     void refreshProjectTasks();
-  }, [refreshChangeSets, refreshProjectTasks, refreshTasks]);
+    refreshMetrics();
+  }, [refreshChangeSets, refreshMetrics, refreshProjectTasks, refreshTasks]);
 
   const refreshSelectedProjectTask = useCallback(
     async (taskId: string, options?: { silent?: boolean; loading?: boolean }) => {
@@ -719,6 +800,44 @@ export function TaskCenterPage() {
         </section>
       ) : null}
 
+      {metrics || metricsLoading ? (
+        <section
+          className="rounded-atelier border border-border bg-surface p-3 text-[11px] text-subtext"
+          aria-label="关键链路指标 (taskcenter_metrics_overview)"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              关键链路指标（最近 {metrics?.data.window_hours ?? 24}h）
+              {metricsLoading ? " · 加载中..." : ""}
+            </div>
+            <button className="btn btn-ghost px-2 py-1 text-[11px]" onClick={refreshMetrics} type="button">
+              刷新指标
+            </button>
+          </div>
+          {metrics ? (
+            <>
+              <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                {metricCards.map((card) => (
+                  <div key={card.key} className="rounded-atelier border border-border bg-canvas p-2">
+                    <div className="text-xs text-ink">{card.label}</div>
+                    <div className="mt-1 text-[11px] text-subtext">
+                      总计 {card.data.total} · 失败 {card.data.failed} · 成功率 {formatPercent(card.data.success_rate)}
+                    </div>
+                    <div className="mt-1 text-[11px] text-subtext">
+                      平均排队 {formatDuration(card.data.avg_queue_ms)} · 平均耗时 {formatDuration(card.data.avg_run_ms)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2 text-[11px] text-subtext">
+                window_start: {metrics.data.window_start} | as_of: {metrics.data.as_of}{" "}
+                {metrics.requestId ? `| request_id: ${metrics.requestId}` : ""}
+              </div>
+            </>
+          ) : null}
+        </section>
+      ) : null}
+
       <DebugDetails title={UI_COPY.help.title}>
         <div className="grid gap-2 text-xs text-subtext">
           <div>{UI_COPY.taskCenter.usageHint}</div>
@@ -900,6 +1019,9 @@ export function TaskCenterPage() {
                       <div className="mt-1 truncate text-xs text-danger">
                         {t.error_type || "ERROR"}: {t.error_message || "未知错误"}
                       </div>
+                    ) : null}
+                    {t.status === "failed" ? (
+                      <div className="mt-1 text-[11px] text-subtext">点击查看详情或使用右侧“重试”。</div>
                     ) : null}
                   </div>
                   <StatusBadge status={t.status} kind="task" />

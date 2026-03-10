@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { Badge } from "../components/ui/Badge";
 import { Drawer } from "../components/ui/Drawer";
@@ -150,6 +150,7 @@ function toForm(entry: WorldBookEntry | null): WorldBookEntryForm {
 
 export function WorldBookPage() {
   const { projectId } = useParams();
+  const navigate = useNavigate();
   const toast = useToast();
   const confirm = useConfirm();
 
@@ -808,6 +809,46 @@ export function WorldBookPage() {
           <button className="btn btn-primary" onClick={openNew} type="button">
             {UI_COPY.worldbook.create}
           </button>
+        </div>
+      </div>
+
+      <div className="panel p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm text-subtext">关系导航</div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="btn btn-secondary"
+              disabled={!projectId}
+              onClick={() => projectId && navigate(`/projects/${projectId}/characters`)}
+              type="button"
+            >
+              角色
+            </button>
+            <button
+              className="btn btn-secondary"
+              disabled={!projectId}
+              onClick={() => projectId && navigate(`/projects/${projectId}/structured-memory?view=character-relations`)}
+              type="button"
+            >
+              角色关系
+            </button>
+            <button
+              className="btn btn-secondary"
+              disabled={!projectId}
+              onClick={() => projectId && navigate(`/projects/${projectId}/graph`)}
+              type="button"
+            >
+              关系图谱
+            </button>
+            <button
+              className="btn btn-secondary"
+              disabled={!projectId}
+              onClick={() => projectId && navigate(`/projects/${projectId}/chapter-analysis`)}
+              type="button"
+            >
+              情节记忆
+            </button>
+          </div>
         </div>
       </div>
 

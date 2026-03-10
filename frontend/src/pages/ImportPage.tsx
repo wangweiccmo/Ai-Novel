@@ -4,7 +4,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { DebugDetails, DebugPageShell } from "../components/atelier/DebugPageShell";
 import { GhostwriterIndicator } from "../components/atelier/GhostwriterIndicator";
 import { useToast } from "../components/ui/toast";
-import { ApiError, apiJson, sanitizeFilename } from "../services/apiClient";
+import { ApiError, apiForm, apiJson, sanitizeFilename } from "../services/apiClient";
 
 type ImportDocument = {
   id: string;
@@ -253,8 +253,6 @@ export function ImportPage() {
     if (creating) return;
 
     const safeName = sanitizeFilename(file.name) || "import.txt";
-    const contentType =
-      safeName.toLowerCase().endsWith(".md") || safeName.toLowerCase().endsWith(".markdown") ? "md" : "txt";
     const maxBytes = 5_000_000;
     if (file.size > maxBytes) {
       toast.toastError(
@@ -266,14 +264,12 @@ export function ImportPage() {
 
     setCreating(true);
     try {
-      const contentText = await file.text();
-      const res = await apiJson<{ document: ImportDocument; job_id: string | null }>(
-        `/api/projects/${projectId}/imports`,
-        {
-          method: "POST",
-          body: JSON.stringify({ filename: safeName, content_text: contentText, content_type: contentType }),
-          timeoutMs: 180_000,
-        },
+      const form = new FormData();
+      form.append("file", file, safeName);
+      const res = await apiForm<{ document: ImportDocument; job_id: string | null }>(
+        `/api/projects/${projectId}/imports/upload`,
+        form,
+        { method: "POST", timeoutMs: 180_000 },
       );
       toast.toastSuccess("已提交导入任务", res.request_id);
       await loadList();
@@ -372,7 +368,7 @@ export function ImportPage() {
       title="导入小说/资料"
       description={
         <div className="grid gap-2">
-          <div>流程：上传 txt/md → 后端切分 chunk →（可选）写入向量 KB → 生成提案（proposal）。</div>
+          <div>流程：上传 txt/md/docx/epub → 后端解析与切分 chunk →（可选）写入向量 KB → 生成提案（proposal）。</div>
           <ul className="grid list-disc gap-1 pl-5 text-xs text-subtext">
             <li>
               世界书（worldbook）：会生成 WorldBookEntry
@@ -407,10 +403,10 @@ export function ImportPage() {
         </div>
         <div className="grid gap-3 rounded-atelier border border-border bg-canvas p-4">
           <div className="grid gap-1">
-            <div className="text-xs text-subtext">选择文件（≤ 5MB）</div>
+            <div className="text-xs text-subtext">选择文件（txt/md/docx/epub，≤ 5MB）</div>
             <input
               aria-label="import_file"
-              accept=".txt,.md,text/plain,text/markdown"
+              accept=".txt,.md,.markdown,.docx,.epub,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/epub+zip"
               className="input"
               disabled={creating}
               onChange={(e) => setFile(e.target.files?.[0] ?? null)}
@@ -438,7 +434,7 @@ export function ImportPage() {
             {listLoading ? <div className="text-xs text-subtext">加载中…</div> : null}
             {documents.length === 0 && !listLoading ? (
               <div className="rounded-atelier border border-border bg-canvas p-4 text-sm text-subtext">
-                暂无导入记录。请先上传 txt/md 文件。
+              暂无导入记录。请先上传 txt/md/docx/epub 文件。
               </div>
             ) : null}
             <div className="grid gap-2">

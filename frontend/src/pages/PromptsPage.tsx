@@ -47,6 +47,10 @@ type TaskModuleView = {
   label: string;
   group: string;
   description: string;
+  recommended_provider?: LLMTaskCatalogItem["recommended_provider"];
+  recommended_model?: LLMTaskCatalogItem["recommended_model"];
+  recommended_note?: LLMTaskCatalogItem["recommended_note"];
+  cost_tier?: LLMTaskCatalogItem["cost_tier"];
   llm_profile_id: string | null;
   form: LlmForm;
   dirty: boolean;
@@ -356,6 +360,10 @@ export function PromptsPage() {
           label: item?.label ?? draft.task_key,
           group: item?.group ?? "custom",
           description: item?.description ?? "任务级模型覆盖",
+          recommended_provider: item?.recommended_provider ?? null,
+          recommended_model: item?.recommended_model ?? null,
+          recommended_note: item?.recommended_note ?? null,
+          cost_tier: item?.cost_tier ?? null,
           llm_profile_id: draft.llm_profile_id,
           form: draft.form,
           dirty: draft.isNew || payloadDirty || bindingDirty,

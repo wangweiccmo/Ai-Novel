@@ -3,6 +3,7 @@ import { useCallback, useEffect, useId, useMemo, useState, type Dispatch, type S
 import { Drawer } from "../ui/Drawer";
 import { ProgressBar } from "../ui/ProgressBar";
 import { UI_COPY } from "../../lib/uiCopy";
+import { useToast } from "../ui/toast";
 import type { Character, LLMPreset } from "../../types";
 import type { GenerateForm } from "./types";
 import { ApiError, apiJson } from "../../services/apiClient";
@@ -26,6 +27,7 @@ type Props = {
   onGenerateReplace: () => void;
   onCancelGenerate?: () => void;
   onOpenPromptInspector: () => void;
+  onOpenSelfCheck?: () => void;
   postEditCompareAvailable?: boolean;
   onOpenPostEditCompare?: () => void;
   contentOptimizeCompareAvailable?: boolean;
@@ -40,6 +42,7 @@ type WritingStyle = {
 
 export function AiGenerateDrawer(props: Props) {
   const { onClose, open } = props;
+  const toast = useToast();
   const streamProviderSupported = !!props.preset && props.preset.provider.startsWith("openai");
   const titleId = useId();
   const advancedPanelId = useId();
@@ -51,6 +54,13 @@ export function AiGenerateDrawer(props: Props) {
   const [projectDefaultStyleId, setProjectDefaultStyleId] = useState<string | null>(null);
   const [stylesError, setStylesError] = useState<ApiError | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [intentCard, setIntentCard] = useState({
+    style: "",
+    pov: "",
+    pacing: "",
+    conflict: "",
+    voice: "",
+  });
 
   const allStyles = useMemo(() => [...presets, ...userStyles], [presets, userStyles]);
   const projectDefaultStyle = useMemo(
@@ -62,6 +72,36 @@ export function AiGenerateDrawer(props: Props) {
     setAdvancedOpen(false);
     onClose();
   }, [onClose]);
+
+  const intentHasContent = useMemo(
+    () => Object.values(intentCard).some((v) => v.trim()),
+    [intentCard],
+  );
+
+  const applyIntentCard = useCallback(() => {
+    if (!intentHasContent) {
+      toast.toastWarning("意图卡片为空，先填写再应用。");
+      return;
+    }
+    const block = [
+      "【意图卡片】",
+      intentCard.style ? `- 风格：${intentCard.style.trim()}` : "",
+      intentCard.pov ? `- 视角：${intentCard.pov.trim()}` : "",
+      intentCard.pacing ? `- 节奏：${intentCard.pacing.trim()}` : "",
+      intentCard.conflict ? `- 冲突：${intentCard.conflict.trim()}` : "",
+      intentCard.voice ? `- 文风：${intentCard.voice.trim()}` : "",
+      "【/意图卡片】",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    props.setGenForm((v) => {
+      const cleaned = (v.instruction ?? "").replace(/【意图卡片】[\s\S]*?【\/意图卡片】\n*/g, "").trim();
+      const nextInstruction = `${block}\n\n${cleaned}`.trim();
+      return { ...v, instruction: nextInstruction };
+    });
+    toast.toastSuccess("已将意图卡片应用到指令");
+  }, [intentCard, intentHasContent, props, toast]);
 
   useEffect(() => {
     if (!open) return;
@@ -160,6 +200,82 @@ export function AiGenerateDrawer(props: Props) {
               />
             </label>
 
+            <div className="rounded-atelier border border-border bg-surface p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-sm text-ink">意图卡片（可选）</div>
+                <div className="flex items-center gap-2">
+                  <button
+                    className="btn btn-secondary"
+                    disabled={props.generating}
+                    onClick={() =>
+                      setIntentCard({ style: "", pov: "", pacing: "", conflict: "", voice: "" })
+                    }
+                    type="button"
+                  >
+                    清空
+                  </button>
+                  <button
+                    className="btn btn-primary"
+                    disabled={props.generating}
+                    onClick={applyIntentCard}
+                    type="button"
+                  >
+                    应用到指令
+                  </button>
+                </div>
+              </div>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <label className="grid gap-1">
+                  <span className="text-[11px] text-subtext">风格</span>
+                  <input
+                    className="input"
+                    value={intentCard.style}
+                    onChange={(e) => setIntentCard((v) => ({ ...v, style: e.target.value }))}
+                    placeholder="如：冷峻克制 / 轻快幽默"
+                  />
+                </label>
+                <label className="grid gap-1">
+                  <span className="text-[11px] text-subtext">视角</span>
+                  <input
+                    className="input"
+                    value={intentCard.pov}
+                    onChange={(e) => setIntentCard((v) => ({ ...v, pov: e.target.value }))}
+                    placeholder="如：第一人称 / 第三人称限定"
+                  />
+                </label>
+                <label className="grid gap-1">
+                  <span className="text-[11px] text-subtext">节奏</span>
+                  <input
+                    className="input"
+                    value={intentCard.pacing}
+                    onChange={(e) => setIntentCard((v) => ({ ...v, pacing: e.target.value }))}
+                    placeholder="如：快节奏 / 稳步推进"
+                  />
+                </label>
+                <label className="grid gap-1">
+                  <span className="text-[11px] text-subtext">冲突</span>
+                  <input
+                    className="input"
+                    value={intentCard.conflict}
+                    onChange={(e) => setIntentCard((v) => ({ ...v, conflict: e.target.value }))}
+                    placeholder="如：角色目标冲突 / 外部危机"
+                  />
+                </label>
+                <label className="grid gap-1 sm:col-span-2">
+                  <span className="text-[11px] text-subtext">文风</span>
+                  <input
+                    className="input"
+                    value={intentCard.voice}
+                    onChange={(e) => setIntentCard((v) => ({ ...v, voice: e.target.value }))}
+                    placeholder="如：细腻写实 / 画面感强"
+                  />
+                </label>
+              </div>
+              <div className="mt-2 text-[11px] text-subtext">
+                应用后会在“用户指令”前插入意图卡片块，可随时修改或删除。
+              </div>
+            </div>
+
             <label className="grid gap-1">
               <span className="text-xs text-subtext">目标字数（中文按字数=字符数）</span>
               <input
@@ -210,6 +326,33 @@ export function AiGenerateDrawer(props: Props) {
                 {stylesError ? ` | 加载失败：${stylesError.code}` : ""}
               </div>
             </label>
+          </div>
+        </div>
+
+        <div className="panel p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-sm font-medium text-ink">生成前/后检查</div>
+            <div className="flex items-center gap-2">
+              <button
+                className="btn btn-secondary"
+                disabled={props.generating || !props.activeChapter}
+                onClick={props.onOpenPromptInspector}
+                type="button"
+              >
+                前置检查
+              </button>
+              <button
+                className="btn btn-secondary"
+                disabled={props.generating || !props.activeChapter || !props.onOpenSelfCheck}
+                onClick={() => props.onOpenSelfCheck?.()}
+                type="button"
+              >
+                生成后自检
+              </button>
+            </div>
+          </div>
+          <div className="mt-2 text-[11px] text-subtext">
+            前置检查用于确认提示词与上下文注入；自检会对生成内容做一致性与逻辑检查。
           </div>
         </div>
 

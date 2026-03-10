@@ -8,7 +8,16 @@ import { copyText } from "../lib/copyText";
 import { PROMPT_STUDIO_TASKS } from "../lib/promptTaskCatalog";
 import { UI_COPY } from "../lib/uiCopy";
 import { ApiError, apiJson, sanitizeFilename } from "../services/apiClient";
-import type { Character, Outline, Project, ProjectSettings, PromptBlock, PromptPreset, PromptPreview } from "../types";
+import type {
+  Character,
+  Outline,
+  Project,
+  ProjectSettings,
+  PromptBlock,
+  PromptPreset,
+  PromptPresetVersion,
+  PromptPreview,
+} from "../types";
 import { PromptStudioPresetEditorPanel } from "./promptStudio/PromptStudioPresetEditorPanel";
 import { PromptStudioPresetListPanel } from "./promptStudio/PromptStudioPresetListPanel";
 import { PromptStudioPreviewPanel } from "./promptStudio/PromptStudioPreviewPanel";
@@ -37,6 +46,10 @@ export function PromptStudioPage() {
   const [selectedPreset, setSelectedPreset] = useState<PromptPreset | null>(null);
   const [blocks, setBlocks] = useState<PromptBlock[]>([]);
   const [drafts, setDrafts] = useState<Record<string, BlockDraft>>({});
+
+  const [versions, setVersions] = useState<PromptPresetVersion[]>([]);
+  const [versionsLoading, setVersionsLoading] = useState(false);
+  const [versionsError, setVersionsError] = useState<string | null>(null);
 
   const [presetDraftName, setPresetDraftName] = useState("");
   const [presetDraftActiveFor, setPresetDraftActiveFor] = useState<string[]>([]);
@@ -128,10 +141,39 @@ export function PromptStudioPage() {
     [toast],
   );
 
+  const loadVersions = useCallback(
+    async (presetId: string) => {
+      if (!presetId) return;
+      setVersionsLoading(true);
+      setVersionsError(null);
+      try {
+        const res = await apiJson<{ versions: PromptPresetVersion[] }>(`/api/prompt_presets/${presetId}/versions`);
+        setVersions(Array.isArray(res.data.versions) ? res.data.versions : []);
+      } catch (e) {
+        const err =
+          e instanceof ApiError
+            ? e
+            : new ApiError({ code: "UNKNOWN", message: String(e), requestId: "unknown", status: 0 });
+        setVersionsError(`${err.message} (${err.code})`);
+      } finally {
+        setVersionsLoading(false);
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!selectedPresetId) return;
     void loadPreset(selectedPresetId);
   }, [loadPreset, selectedPresetId]);
+
+  useEffect(() => {
+    if (!selectedPresetId) {
+      setVersions([]);
+      return;
+    }
+    void loadVersions(selectedPresetId);
+  }, [loadVersions, selectedPresetId]);
 
   const createPreset = useCallback(
     async (rawName: string): Promise<boolean> => {
@@ -374,6 +416,54 @@ export function PromptStudioPage() {
       }
     },
     [blocks, confirm, toast],
+  );
+
+  const rollbackPresetVersion = useCallback(
+    async (version: PromptPresetVersion) => {
+      if (!selectedPresetId) return;
+      const ok = await confirm.confirm({
+        title: "回滚到指定版本？",
+        description: `将把当前预设恢复到版本 #${version.version}（preset_version=${version.preset_version ?? "-"})，当前修改会被覆盖。`,
+        confirmText: "回滚",
+        cancelText: "取消",
+        danger: true,
+      });
+      if (!ok) return;
+
+      setBusy(true);
+      try {
+        const res = await apiJson<PresetDetails>(`/api/prompt_presets/${selectedPresetId}/rollback`, {
+          method: "POST",
+          body: JSON.stringify({ version_id: version.id }),
+        });
+        setSelectedPreset(res.data.preset);
+        setBlocks(res.data.blocks ?? []);
+        setPresetDraftName(res.data.preset.name ?? "");
+        setPresetDraftActiveFor(res.data.preset.active_for ?? []);
+        const nextDrafts: Record<string, BlockDraft> = {};
+        for (const b of res.data.blocks ?? []) {
+          nextDrafts[b.id] = {
+            identifier: b.identifier,
+            name: b.name,
+            role: b.role,
+            enabled: b.enabled,
+            template: b.template ?? "",
+            marker_key: b.marker_key ?? "",
+            triggers: formatTriggers(b.triggers ?? []),
+          };
+        }
+        setDrafts(nextDrafts);
+        toast.toastSuccess("已回滚到指定版本");
+        await reloadAll();
+        void loadVersions(selectedPresetId);
+      } catch (e) {
+        const err = e as ApiError;
+        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [confirm, loadVersions, reloadAll, selectedPresetId, toast],
   );
 
   const onReorder = useCallback(
@@ -748,6 +838,51 @@ export function PromptStudioPage() {
             deleteBlock={deleteBlock}
             onReorder={onReorder}
           />
+
+          <div className="panel p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="text-sm font-semibold">版本管理</div>
+              <button
+                className="btn btn-secondary btn-sm"
+                disabled={busy || !selectedPresetId}
+                onClick={() => selectedPresetId && loadVersions(selectedPresetId)}
+                type="button"
+              >
+                刷新版本
+              </button>
+            </div>
+
+            {versionsLoading ? <div className="text-xs text-subtext">加载中...</div> : null}
+            {versionsError ? <div className="text-xs text-danger">{versionsError}</div> : null}
+
+            {!versionsLoading && versions.length === 0 ? (
+              <div className="text-xs text-subtext">暂无版本记录（保存或修改后会自动生成）。</div>
+            ) : null}
+
+            <div className="grid gap-2">
+              {versions.map((v) => (
+                <div key={v.id} className="rounded-atelier border border-border bg-surface p-2 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0 text-subtext">
+                      版本 #{v.version} · preset_version={v.preset_version ?? "-"} · {v.note ?? "auto"}
+                    </div>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      disabled={busy}
+                      onClick={() => void rollbackPresetVersion(v)}
+                      type="button"
+                    >
+                      回滚
+                    </button>
+                  </div>
+                  <div className="mt-1 text-[11px] text-subtext">
+                    {v.created_at ? `created_at: ${v.created_at}` : "created_at: -"}{" "}
+                    {v.actor_user_id ? `| actor: ${v.actor_user_id}` : ""}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
 
           <PromptStudioPreviewPanel
             busy={busy}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from typing import Any
 
 from sqlalchemy import delete, select
@@ -42,6 +43,7 @@ from app.services.search_index_service import schedule_search_rebuild_task
 from app.services.vector_rag_service import schedule_vector_rebuild_task
 
 _MANAGED_MEMORY_TYPES = {"chapter_summary", "hook", "plot_point", "foreshadow", "character_state"}
+_QUALITY_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[\u4e00-\u9fff]")
 
 logger = logging.getLogger("ainovel")
 
@@ -190,6 +192,80 @@ def _clamp01(value: float) -> float:
     if value > 1:
         return 1.0
     return float(value)
+
+
+def _list_len(value: object) -> int:
+    return int(len(value)) if isinstance(value, list) else 0
+
+
+def _count_words(text: str | None) -> int:
+    if not text:
+        return 0
+    return int(len(_QUALITY_TOKEN_RE.findall(text)))
+
+
+def _length_score(words: int) -> float:
+    if words <= 0:
+        return 0.0
+    if words < 300:
+        return _clamp01(words / 300.0)
+    if words <= 1800:
+        return 1.0
+    if words <= 3600:
+        return 0.9
+    if words <= 6000:
+        return 0.8
+    return 0.7
+
+
+def compute_quality_scores(*, analysis: dict[str, Any], content_md: str | None) -> dict[str, Any]:
+    hooks = _list_len(analysis.get("hooks"))
+    foreshadows = _list_len(analysis.get("foreshadows"))
+    plot_points = _list_len(analysis.get("plot_points"))
+    suggestions = _list_len(analysis.get("suggestions"))
+    summary_present = bool(str(analysis.get("chapter_summary") or "").strip())
+    words = _count_words(content_md)
+
+    hook_score = min(hooks / 2.0, 1.0)
+    foreshadow_score = min(foreshadows / 2.0, 1.0)
+    plot_score = min(plot_points / 4.0, 1.0)
+    length_score = _length_score(words)
+
+    coherence = _clamp01(0.35 + 0.35 * plot_score + 0.3 * (1.0 if summary_present else 0.0))
+    engagement = _clamp01(0.3 + 0.35 * hook_score + 0.35 * foreshadow_score)
+    pacing = _clamp01(0.2 + 0.4 * plot_score + 0.4 * length_score)
+    base = (coherence + engagement + pacing) / 3.0
+    penalty = min(float(suggestions), 6.0) * 0.03
+    overall = _clamp01(base - penalty)
+
+    report_md = (
+        "## 质量评估（v1 / heuristic）\n"
+        f"- 字数（approx）：{words}\n"
+        f"- Hooks：{hooks} | Foreshadows：{foreshadows} | Plot Points：{plot_points} | Suggestions：{suggestions}\n"
+        f"- 整体：{overall:.2f} | 连贯：{coherence:.2f} | 张力：{engagement:.2f} | 节奏：{pacing:.2f}\n"
+        "\n"
+        "说明：该评分为启发式估计，主要基于章节结构密度与分析产物数量，用于趋势参考而非绝对评判。"
+    )
+
+    return {
+        "schema_version": "quality_v1",
+        "method": "heuristic",
+        "word_count": words,
+        "counts": {
+            "hooks": hooks,
+            "foreshadows": foreshadows,
+            "plot_points": plot_points,
+            "suggestions": suggestions,
+            "summary_present": int(summary_present),
+        },
+        "scores": {
+            "overall": overall,
+            "coherence": coherence,
+            "engagement": engagement,
+            "pacing": pacing,
+        },
+        "report_md": report_md,
+    }
 
 
 def _importance_from_item(item: dict[str, Any], default: float) -> float:
@@ -444,11 +520,13 @@ def apply_chapter_analysis(
                 .scalars()
                 .all()
             )
+            quality = compute_quality_scores(analysis=validated, content_md=draft_content_md or "")
             return {
                 "idempotent": True,
                 "analysis_hash": analysis_hash,
                 "plot_analysis_id": existing.id,
                 "memories": [_story_memory_out(m) for m in memories],
+                "quality_scores": quality,
             }
 
     content_md = draft_content_md or ""
@@ -467,6 +545,8 @@ def apply_chapter_analysis(
                 return int(value)
             return int(default)
 
+        quality = compute_quality_scores(analysis=validated, content_md=content_md)
+
         if existing is None:
             plot = PlotAnalysis(
                 id=new_id(),
@@ -480,6 +560,12 @@ def apply_chapter_analysis(
             existing.analysis_json = canonical_json
             existing.created_at = now
             plot = existing
+
+        plot.overall_quality_score = float(quality["scores"]["overall"])
+        plot.coherence_score = float(quality["scores"]["coherence"])
+        plot.engagement_score = float(quality["scores"]["engagement"])
+        plot.pacing_score = float(quality["scores"]["pacing"])
+        plot.analysis_report_md = str(quality.get("report_md") or "")
 
         db.execute(
             delete(StoryMemory).where(
@@ -554,6 +640,7 @@ def apply_chapter_analysis(
             "analysis_hash": analysis_hash,
             "plot_analysis_id": plot.id,
             "memories": [_story_memory_out(m) for m in created],
+            "quality_scores": quality,
         }
     except Exception:
         db.rollback()

@@ -20,6 +20,7 @@ from app.models.project_source_document import ProjectSourceDocument, ProjectSou
 from app.models.project_default_style import ProjectDefaultStyle
 from app.models.prompt_block import PromptBlock
 from app.models.prompt_preset import PromptPreset
+from app.models.prompt_preset_version import PromptPresetVersion
 from app.models.plot_analysis import PlotAnalysis
 from app.models.search_index import SearchDocument
 from app.models.story_memory import StoryMemory
@@ -66,6 +67,7 @@ __all__ = [
     "ProjectSourceDocumentChunk",
     "PromptBlock",
     "PromptPreset",
+    "PromptPresetVersion",
     "PlotAnalysis",
     "SearchDocument",
     "MemoryChangeSet",

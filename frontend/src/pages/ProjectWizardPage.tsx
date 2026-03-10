@@ -274,6 +274,33 @@ export function ProjectWizardPage() {
 
       <section className="panel p-6">
         <div className="grid gap-1">
+          <div className="font-content text-xl">里程碑与待办</div>
+          <div className="text-xs text-subtext">系统根据向导进度自动生成待办项。</div>
+        </div>
+        <div className="mt-4 grid gap-2">
+          {progress.steps.filter((s) => s.state === "todo").length === 0 ? (
+            <div className="text-sm text-subtext">已完成全部关键步骤。</div>
+          ) : (
+            progress.steps
+              .filter((s) => s.state === "todo")
+              .slice(0, 5)
+              .map((s) => (
+                <div key={s.key} className="flex flex-wrap items-center justify-between gap-2 rounded-atelier border border-border bg-canvas p-3">
+                  <div className="min-w-0">
+                    <div className="text-sm text-ink">{s.title}</div>
+                    <div className="text-xs text-subtext">{s.description}</div>
+                  </div>
+                  <button className="btn btn-secondary" onClick={() => goStep(s)} type="button">
+                    前往
+                  </button>
+                </div>
+              ))
+          )}
+        </div>
+      </section>
+
+      <section className="panel p-6">
+        <div className="grid gap-1">
           <div className="font-content text-xl">从这里开始</div>
           <div className="text-xs text-subtext">请选择「按步骤（推荐）」或「快速开工（自动）」；两者都可随时切换。</div>
         </div>

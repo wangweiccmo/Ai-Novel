@@ -144,6 +144,47 @@ export async function apiJson<T>(path: string, init?: ApiRequestInit): Promise<A
   });
 }
 
+export async function apiForm<T>(
+  path: string,
+  form: FormData,
+  init?: ApiRequestInit,
+): Promise<ApiOkPayload<T>> {
+  const headers = new Headers(init?.headers ?? {});
+  headers.delete("Content-Type");
+
+  const res = await fetchWithTimeout(path, {
+    ...init,
+    headers,
+    body: form,
+  });
+
+  const requestIdHeader = res.headers.get("X-Request-Id") ?? undefined;
+  const payload = (await parseJsonSafe(res)) as ApiOkPayload<T> | ApiErrorPayload | unknown;
+
+  if (typeof payload === "object" && payload && "ok" in payload) {
+    const typed = payload as ApiOkPayload<T> | ApiErrorPayload;
+    if (typed.ok) return typed as ApiOkPayload<T>;
+    if (shouldNotifyUnauthorized(res.status, typed.error.code))
+      notifyUnauthorized(typed.request_id ?? requestIdHeader ?? "unknown");
+    throw new ApiError({
+      code: typed.error.code,
+      message: typed.error.message,
+      details: typed.error.details,
+      requestId: typed.request_id ?? requestIdHeader ?? "unknown",
+      status: res.status,
+    });
+  }
+
+  if (shouldNotifyUnauthorized(res.status, null)) notifyUnauthorized(requestIdHeader ?? "unknown");
+  throw new ApiError({
+    code: "BAD_RESPONSE",
+    message: "响应格式错误",
+    requestId: requestIdHeader ?? "unknown",
+    status: res.status,
+    details: payload,
+  });
+}
+
 export async function apiDownloadMarkdown(path: string): Promise<{ filename: string; content: string }> {
   const res = await fetchWithTimeout(path);
   const contentType = res.headers.get("Content-Type") ?? "";

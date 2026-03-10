@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useState } from "react";
 
 import { Drawer } from "../ui/Drawer";
+import { buildNaiveUnifiedLineDiff } from "../../lib/textDiff";
 
 type Props = {
   open: boolean;
@@ -14,25 +15,6 @@ type Props = {
 };
 
 type ViewMode = "diff" | "raw" | "content_optimize";
-
-function buildNaiveUnifiedLineDiff(raw: string, optimized: string): string {
-  const rawLines = raw.split("\n");
-  const optimizedLines = optimized.split("\n");
-  const max = Math.max(rawLines.length, optimizedLines.length);
-
-  const out: string[] = [];
-  for (let i = 0; i < max; i++) {
-    const r = rawLines[i];
-    const o = optimizedLines[i];
-    if (r === o) {
-      out.push(`  ${r ?? ""}`);
-      continue;
-    }
-    if (typeof r === "string") out.push(`- ${r}`);
-    if (typeof o === "string") out.push(`+ ${o}`);
-  }
-  return out.join("\n");
-}
 
 export function ContentOptimizeCompareDrawer(props: Props) {
   const { onClose, open } = props;

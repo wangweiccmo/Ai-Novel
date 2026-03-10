@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, File, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -11,7 +11,12 @@ from app.core.errors import AppError, ok_payload
 from app.db.session import SessionLocal
 from app.db.utils import new_id
 from app.models.project_source_document import ProjectSourceDocument, ProjectSourceDocumentChunk
-from app.services.import_export_service import retry_import_task
+from app.services.import_export_service import (
+    MAX_IMPORT_BYTES,
+    extract_import_text,
+    normalize_import_content_type,
+    retry_import_task,
+)
 from app.services.task_queue import get_task_queue
 from app.services.vector_kb_service import create_kb as create_vector_kb
 
@@ -50,49 +55,28 @@ def _safe_json(raw: str | None, default: object) -> object:
 class ImportCreateRequest(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
     content_text: str = Field(min_length=1, max_length=5_000_000)
-    content_type: str | None = Field(default=None, max_length=32)
+    content_type: str | None = Field(default=None, max_length=128)
 
 
-@router.get("/projects/{project_id}/imports")
-def list_imports(request: Request, db: DbDep, user_id: UserIdDep, project_id: str) -> dict:
-    request_id = request.state.request_id
-    require_project_viewer(db, project_id=project_id, user_id=user_id)
-
-    rows = (
-        db.execute(
-            select(ProjectSourceDocument)
-            .where(ProjectSourceDocument.project_id == project_id)
-            .order_by(ProjectSourceDocument.updated_at.desc(), ProjectSourceDocument.created_at.desc())
-        )
-        .scalars()
-        .all()
-    )
-    return ok_payload(request_id=request_id, data={"documents": [_doc_public(r) for r in rows]})
-
-
-@router.post("/projects/{project_id}/imports")
-def create_import(request: Request, db: DbDep, user_id: UserIdDep, project_id: str, body: ImportCreateRequest) -> dict:
-    request_id = request.state.request_id
-    require_project_editor(db, project_id=project_id, user_id=user_id)
-
-    filename = str(body.filename or "").strip()
-    if not filename:
-        filename = "import.txt"
-    content_type = str(body.content_type or "").strip().lower() or None
-    if content_type is None:
-        lowered = filename.lower()
-        if lowered.endswith(".md") or lowered.endswith(".markdown"):
-            content_type = "md"
-        else:
-            content_type = "txt"
+def _create_import_doc(
+    *,
+    db: DbDep,
+    project_id: str,
+    user_id: str,
+    filename: str,
+    content_text: str,
+    content_type: str | None,
+) -> tuple[ProjectSourceDocument, str | None, str | None]:
+    filename = str(filename or "").strip() or "import.txt"
+    content_type_norm = normalize_import_content_type(filename, content_type)
 
     doc = ProjectSourceDocument(
         id=new_id(),
         project_id=project_id,
         actor_user_id=user_id,
         filename=filename,
-        content_type=content_type,
-        content_text=body.content_text,
+        content_type=content_type_norm,
+        content_text=content_text,
         status="queued",
         progress=0,
         progress_message="queued",
@@ -119,6 +103,77 @@ def create_import(request: Request, db: DbDep, user_id: UserIdDep, project_id: s
         doc.error_message = f"enqueue_failed:{enqueue_error}"
         db.commit()
         db.refresh(doc)
+
+    return doc, job_id, enqueue_error
+
+
+@router.get("/projects/{project_id}/imports")
+def list_imports(request: Request, db: DbDep, user_id: UserIdDep, project_id: str) -> dict:
+    request_id = request.state.request_id
+    require_project_viewer(db, project_id=project_id, user_id=user_id)
+
+    rows = (
+        db.execute(
+            select(ProjectSourceDocument)
+            .where(ProjectSourceDocument.project_id == project_id)
+            .order_by(ProjectSourceDocument.updated_at.desc(), ProjectSourceDocument.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    return ok_payload(request_id=request_id, data={"documents": [_doc_public(r) for r in rows]})
+
+
+@router.post("/projects/{project_id}/imports")
+def create_import(request: Request, db: DbDep, user_id: UserIdDep, project_id: str, body: ImportCreateRequest) -> dict:
+    request_id = request.state.request_id
+    require_project_editor(db, project_id=project_id, user_id=user_id)
+
+    doc, job_id, _ = _create_import_doc(
+        db=db,
+        project_id=project_id,
+        user_id=user_id,
+        filename=body.filename,
+        content_text=body.content_text,
+        content_type=body.content_type,
+    )
+
+    return ok_payload(request_id=request_id, data={"document": _doc_public(doc), "job_id": job_id})
+
+
+@router.post("/projects/{project_id}/imports/upload")
+async def create_import_upload(
+    request: Request,
+    db: DbDep,
+    user_id: UserIdDep,
+    project_id: str,
+    file: UploadFile = File(...),
+) -> dict:
+    request_id = request.state.request_id
+    require_project_editor(db, project_id=project_id, user_id=user_id)
+
+    filename = str(getattr(file, "filename", "") or "").strip() or "import.txt"
+    raw = await file.read()
+    if not raw:
+        raise AppError.validation(message="空文件，无法导入")
+    if len(raw) > MAX_IMPORT_BYTES:
+        raise AppError.validation(
+            message=f"文件过大（{len(raw)} bytes），上限 {MAX_IMPORT_BYTES} bytes",
+            details={"size_bytes": len(raw), "limit_bytes": MAX_IMPORT_BYTES},
+        )
+
+    content_text, content_type = extract_import_text(filename, getattr(file, "content_type", None), raw)
+    if not content_text.strip():
+        raise AppError.validation(message="无法解析文件内容")
+
+    doc, job_id, _ = _create_import_doc(
+        db=db,
+        project_id=project_id,
+        user_id=user_id,
+        filename=filename,
+        content_text=content_text,
+        content_type=content_type,
+    )
 
     return ok_payload(request_id=request_id, data={"document": _doc_public(doc), "job_id": job_id})
 

@@ -1,6 +1,7 @@
 import { useId } from "react";
 
 import { Modal } from "../ui/Modal";
+import { ProgressBar } from "../ui/ProgressBar";
 
 import type { ChapterAnalyzeResult } from "./types";
 
@@ -22,6 +23,15 @@ export function ChapterAnalysisModal(props: {
 }) {
   const busy = props.analysisLoading || props.rewriteLoading || props.applyLoading;
   const titleId = useId();
+  const quality = props.analysisResult?.quality_scores;
+  const scoreItems = [
+    { key: "overall", label: "整体", value: quality?.scores?.overall },
+    { key: "coherence", label: "连贯", value: quality?.scores?.coherence },
+    { key: "engagement", label: "张力", value: quality?.scores?.engagement },
+    { key: "pacing", label: "节奏", value: quality?.scores?.pacing },
+  ];
+  const wordCount = quality?.word_count;
+  const counts = quality?.counts;
   return (
     <Modal
       open={props.open}
@@ -93,6 +103,49 @@ export function ChapterAnalysisModal(props: {
             {props.analysisResult.warnings && props.analysisResult.warnings.length > 0 ? (
               <div className="rounded-atelier border border-border bg-surface p-3 text-xs text-subtext">
                 warnings: {props.analysisResult.warnings.join(", ")}
+              </div>
+            ) : null}
+
+            {quality?.scores ? (
+              <div className="grid gap-3 rounded-atelier border border-border bg-surface p-3">
+                <div className="text-sm text-ink">质量评估（启发式）</div>
+                <div className="text-xs text-subtext">
+                  口径：结构要素密度 + 章节长度（仅供趋势参考）
+                  {quality?.schema_version ? ` | ${quality.schema_version}` : ""}
+                </div>
+                <div className="mt-1 grid gap-2">
+                  {scoreItems.map((item) => {
+                    const value = typeof item.value === "number" ? item.value : null;
+                    const percent = value == null ? 0 : Math.round(value * 100);
+                    return (
+                      <div key={item.key} className="grid gap-1">
+                        <div className="flex items-center justify-between text-[11px] text-subtext">
+                          <span>{item.label}</span>
+                          <span className="text-ink">{value == null ? "-" : `${percent}%`}</span>
+                        </div>
+                        <ProgressBar
+                          value={value == null ? 0 : percent}
+                          ariaLabel={`quality_${item.key}`}
+                          ariaValueText={value == null ? "-" : `${percent}%`}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mt-2 text-[11px] text-subtext">
+                  字数：{wordCount ?? "-"} | Hooks：{counts?.hooks ?? 0} | Foreshadows：{counts?.foreshadows ?? 0} | Plot
+                  Points：{counts?.plot_points ?? 0} | Suggestions：{counts?.suggestions ?? 0}
+                </div>
+                {quality?.report_md ? (
+                  <details className="mt-1">
+                    <summary className="ui-transition-fast cursor-pointer text-xs text-subtext hover:text-ink">
+                      评分说明
+                    </summary>
+                    <pre className="mt-2 max-h-56 overflow-auto rounded-atelier border border-border bg-canvas p-3 text-[11px] text-ink">
+                      {quality.report_md}
+                    </pre>
+                  </details>
+                ) : null}
               </div>
             ) : null}
 

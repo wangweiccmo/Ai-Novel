@@ -2,6 +2,7 @@ import { useCallback, useMemo } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 
 import type { LLMProfile, LLMProvider, LLMTaskCatalogItem } from "../../types";
+import { Badge, type BadgeTone } from "../ui/Badge";
 import type { LlmForm, LlmModelListState } from "./types";
 
 type TaskModuleView = {
@@ -9,6 +10,10 @@ type TaskModuleView = {
   label: string;
   group: string;
   description: string;
+  recommended_provider?: LLMTaskCatalogItem["recommended_provider"];
+  recommended_model?: LLMTaskCatalogItem["recommended_model"];
+  recommended_note?: LLMTaskCatalogItem["recommended_note"];
+  cost_tier?: LLMTaskCatalogItem["cost_tier"];
   llm_profile_id: string | null;
   form: LlmForm;
   dirty: boolean;
@@ -130,6 +135,36 @@ function providerLabel(provider: LLMProvider): string {
   if (provider === "anthropic") return "Anthropic";
   if (provider === "deepseek") return "DeepSeek";
   return "Gemini";
+}
+
+const COST_TIER_META: Record<string, { label: string; tone: BadgeTone }> = {
+  low: { label: "低成本", tone: "success" },
+  medium: { label: "中成本", tone: "warning" },
+  high: { label: "高成本", tone: "danger" },
+};
+
+function getCostTierMeta(tier: string | null | undefined): { label: string; tone: BadgeTone } | null {
+  if (!tier) return null;
+  const key = String(tier || "").trim();
+  return COST_TIER_META[key] ?? null;
+}
+
+function formatRecommendedLabel(task: {
+  recommended_provider?: LLMTaskCatalogItem["recommended_provider"];
+  recommended_model?: LLMTaskCatalogItem["recommended_model"];
+}): string | null {
+  const provider = task.recommended_provider ? providerLabel(task.recommended_provider as LLMProvider) : "";
+  const model = String(task.recommended_model || "").trim();
+  if (!provider && !model) return null;
+  return [provider, model].filter(Boolean).join(" / ");
+}
+
+function formatRecommendedCompact(task: LLMTaskCatalogItem): string | null {
+  const provider = String(task.recommended_provider || "").trim();
+  const model = String(task.recommended_model || "").trim();
+  if (!provider && !model) return null;
+  if (provider && model) return `${provider}/${model}`;
+  return provider || model;
 }
 
 function maxTokensHint(
@@ -518,7 +553,14 @@ export function LlmPresetPanel(props: Props) {
               <option value="">选择要新增的任务模块</option>
               {props.addableTasks.map((task) => (
                 <option key={task.key} value={task.key}>
-                  [{task.group}] {task.label}
+                  {(() => {
+                    const parts = [`[${task.group}] ${task.label}`];
+                    const recommend = formatRecommendedCompact(task);
+                    if (recommend) parts.push(`推荐 ${recommend}`);
+                    const costLabel = getCostTierMeta(task.cost_tier)?.label;
+                    if (costLabel) parts.push(costLabel);
+                    return parts.join(" · ");
+                  })()}
                 </option>
               ))}
             </select>
@@ -560,6 +602,19 @@ export function LlmPresetPanel(props: Props) {
                         [{task.group}] {task.label}
                       </div>
                       <div className="text-xs text-subtext">{task.description}</div>
+                      {(() => {
+                        const costMeta = getCostTierMeta(task.cost_tier);
+                        const recommendLabel = formatRecommendedLabel(task);
+                        const note = String(task.recommended_note || "").trim();
+                        if (!costMeta && !recommendLabel && !note) return null;
+                        return (
+                          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-subtext">
+                            {costMeta ? <Badge tone={costMeta.tone}>{costMeta.label}</Badge> : null}
+                            {recommendLabel ? <Badge tone="accent">推荐 {recommendLabel}</Badge> : null}
+                            {note ? <span>{note}</span> : null}
+                          </div>
+                        );
+                      })()}
                       <div className="text-[11px] text-subtext">任务键：{task.task_key}</div>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">

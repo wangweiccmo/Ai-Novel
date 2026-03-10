@@ -1,6 +1,6 @@
 import { motion, useReducedMotion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 
 import { WizardNextBar } from "../components/atelier/WizardNextBar";
 import { Drawer } from "../components/ui/Drawer";
@@ -24,6 +24,7 @@ type CharacterForm = {
 
 export function CharactersPage() {
   const { projectId } = useParams();
+  const navigate = useNavigate();
   const toast = useToast();
   const confirm = useConfirm();
   const reduceMotion = useReducedMotion();
@@ -253,6 +254,46 @@ export function CharactersPage() {
         <button className="btn btn-primary" onClick={openNew} type="button">
           新增角色
         </button>
+      </div>
+
+      <div className="panel p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm text-subtext">关系导航</div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="btn btn-secondary"
+              disabled={!projectId}
+              onClick={() => projectId && navigate(`/projects/${projectId}/structured-memory?view=character-relations`)}
+              type="button"
+            >
+              角色关系
+            </button>
+            <button
+              className="btn btn-secondary"
+              disabled={!projectId}
+              onClick={() => projectId && navigate(`/projects/${projectId}/graph`)}
+              type="button"
+            >
+              关系图谱
+            </button>
+            <button
+              className="btn btn-secondary"
+              disabled={!projectId}
+              onClick={() => projectId && navigate(`/projects/${projectId}/worldbook`)}
+              type="button"
+            >
+              世界观
+            </button>
+            <button
+              className="btn btn-secondary"
+              disabled={!projectId}
+              onClick={() => projectId && navigate(`/projects/${projectId}/chapter-analysis`)}
+              type="button"
+            >
+              情节记忆
+            </button>
+          </div>
+        </div>
       </div>
 
       {loading && charactersQuery.data === null ? (

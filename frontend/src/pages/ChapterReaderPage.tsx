@@ -31,6 +31,7 @@ function humanizeChapterStatusZh(status: string): string {
   const s = String(status || "").trim();
   if (s === "planned") return "计划中";
   if (s === "drafting") return "草稿";
+  if (s === "proofreading") return "校对";
   if (s === "done") return "定稿";
   return s || "未知";
 }

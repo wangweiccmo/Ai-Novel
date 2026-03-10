@@ -395,6 +395,31 @@ export function ContextPreviewDrawer(props: Props) {
     return { enabledCount, disabledCount: packLogs.length - enabledCount };
   }, [packLogs]);
 
+  const memoryConfidence = useMemo(() => {
+    if (!memoryInjectionEnabled) return { score: 0, level: "关闭", filled: 0, total: 0 };
+    const getTextMd = (raw: unknown): string => {
+      if (!raw || typeof raw !== "object") return "";
+      const o = raw as Record<string, unknown>;
+      return typeof o.text_md === "string" ? o.text_md.trim() : "";
+    };
+    const sections = [
+      effectivePack.worldbook,
+      effectivePack.story_memory,
+      effectivePack.semantic_history,
+      effectivePack.foreshadow_open_loops,
+      effectivePack.structured,
+      effectivePack.tables,
+      effectivePack.vector_rag,
+      effectivePack.graph,
+      effectivePack.fractal,
+    ];
+    const total = sections.length;
+    const filled = sections.filter((s) => getTextMd(s)).length;
+    const score = total > 0 ? Math.round((filled / total) * 100) : 0;
+    const level = score >= 70 ? "高" : score >= 40 ? "中" : "低";
+    return { score, level, filled, total };
+  }, [effectivePack, memoryInjectionEnabled]);
+
   const loadContextOptimizerSetting = useCallback(async () => {
     if (!projectId) return;
     setContextOptimizerSettingsLoading(true);
@@ -665,6 +690,12 @@ export function ContextPreviewDrawer(props: Props) {
             <div className="mt-2 text-[11px] text-subtext">
               模块状态：已启用 {packLogStats.enabledCount} 项，已禁用 {packLogStats.disabledCount} 项（展开“Pack
               sections”查看原因）。
+            </div>
+          ) : null}
+          {memoryInjectionEnabled ? (
+            <div className="mt-1 text-[11px] text-subtext">
+              记忆可信度：{memoryConfidence.score}%（{memoryConfidence.level}，{memoryConfidence.filled}/
+              {memoryConfidence.total} 模块有内容）
             </div>
           ) : null}
         </div>

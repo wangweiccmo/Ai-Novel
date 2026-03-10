@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { GhostwriterIndicator } from "../components/atelier/GhostwriterIndicator";
@@ -10,6 +12,7 @@ import { ProgressBar } from "../components/ui/ProgressBar";
 import { AiGenerateDrawer } from "../components/writing/AiGenerateDrawer";
 import { BatchGenerationModal } from "../components/writing/BatchGenerationModal";
 import { ChapterListPanel } from "../components/writing/ChapterListPanel";
+import { ChapterDiffDrawer } from "../components/writing/ChapterDiffDrawer";
 import { CreateChapterDialog } from "../components/writing/CreateChapterDialog";
 import { ChapterAnalysisModal } from "../components/writing/ChapterAnalysisModal";
 import { ContentOptimizeCompareDrawer } from "../components/writing/ContentOptimizeCompareDrawer";
@@ -28,6 +31,7 @@ import { useProjectData } from "../hooks/useProjectData";
 import { useWizardProgress } from "../hooks/useWizardProgress";
 import { UnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { ApiError, apiJson } from "../services/apiClient";
+import { chapterStore } from "../services/chapterStore";
 import { getWizardProjectChangedAt } from "../services/wizard";
 import { useApplyGenerationRun } from "./writing/useApplyGenerationRun";
 import { useBatchGeneration } from "./writing/useBatchGeneration";
@@ -48,6 +52,23 @@ type ChapterAutoUpdatesTriggerResult = {
   tasks: Record<string, string | null>;
   chapter_token: string | null;
 };
+
+type EditorView = "outline" | "draft" | "final" | "polish";
+
+type OutlineGenChapter = { number: number; title: string; beats: string[] };
+type OutlineGenResult = {
+  outline_md: string;
+  chapters: OutlineGenChapter[];
+  raw_output: string;
+  parse_error?: { code: string; message: string };
+};
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!target || !(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
 
 function pickFirstProjectTaskId(tasks: Record<string, string | null> | null | undefined): string | null {
   if (!tasks) return null;
@@ -120,6 +141,7 @@ export function WritingPage() {
   } = chapterEditor;
   const contentTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [contentEditorTab, setContentEditorTab] = useState<"edit" | "preview">("edit");
+  const [editorView, setEditorView] = useState<EditorView>("draft");
 
   useEffect(() => {
     if (!projectId) {
@@ -147,6 +169,8 @@ export function WritingPage() {
   const [promptInspectorOpen, setPromptInspectorOpen] = useState(false);
   const [postEditCompareOpen, setPostEditCompareOpen] = useState(false);
   const [contentOptimizeCompareOpen, setContentOptimizeCompareOpen] = useState(false);
+  const [chapterDiffOpen, setChapterDiffOpen] = useState(false);
+  const [quickStartRunning, setQuickStartRunning] = useState(false);
   const [tablesOpen, setTablesOpen] = useState(false);
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [memoryUpdateOpen, setMemoryUpdateOpen] = useState(false);
@@ -191,6 +215,67 @@ export function WritingPage() {
     bumpWizardLocal,
     refreshWizard,
   });
+
+  const chapterListEmptyState = (
+    <div className="grid gap-2 text-center text-sm text-subtext">
+      <div>暂无章节</div>
+      <div className="flex flex-wrap justify-center gap-2">
+        <button
+          className="btn btn-primary"
+          disabled={quickStartRunning}
+          onClick={() => {
+            setChapterListOpen(false);
+            void autoOutlineAndChapters();
+          }}
+          type="button"
+        >
+          {quickStartRunning ? "生成中..." : "一键生成大纲+章节"}
+        </button>
+        <button
+          className="btn btn-secondary"
+          onClick={() => {
+            setChapterListOpen(false);
+            chapterCrud.openCreate();
+          }}
+          type="button"
+        >
+          新建章节
+        </button>
+        <button
+          className="btn btn-secondary"
+          disabled={!projectId}
+          onClick={() => {
+            if (!projectId) return;
+            setChapterListOpen(false);
+            navigate(`/projects/${projectId}/outline`);
+          }}
+          type="button"
+        >
+          前往大纲
+        </button>
+        <button
+          className="btn btn-secondary"
+          disabled={!projectId}
+          onClick={() => {
+            if (!projectId) return;
+            setChapterListOpen(false);
+            navigate(`/projects/${projectId}/wizard`);
+          }}
+          type="button"
+        >
+          开工向导
+        </button>
+      </div>
+    </div>
+  );
+
+  const editorViewOptions: { key: EditorView; label: string; hint: string }[] = [
+    { key: "outline", label: "大纲", hint: "聚焦本章要点与摘要" },
+    { key: "draft", label: "草稿", hint: "编辑正文内容" },
+    { key: "final", label: "成稿", hint: "只读预览与校对" },
+    { key: "polish", label: "润色", hint: "调用 AI 进行润色/优化" },
+  ];
+  const editorViewHint = editorViewOptions.find((v) => v.key === editorView)?.hint ?? "";
 
   const generation = useChapterGeneration({
     projectId,
@@ -248,6 +333,15 @@ export function WritingPage() {
     refreshChapters,
     refreshWriting,
   });
+
+  const selectedCharacterNames = useMemo(() => {
+    const ids = new Set(genForm.context.character_ids ?? []);
+    if (!ids.size) return [];
+    return characters
+      .filter((c) => ids.has(c.id))
+      .map((c) => c.name)
+      .filter((v): v is string => Boolean(v && v.trim()));
+  }, [characters, genForm.context.character_ids]);
 
   const locateInEditor = useCallback(
     (excerpt: string) => {
@@ -352,6 +446,218 @@ export function WritingPage() {
     setAiOpen(true);
   }, [activeChapter, chapters, confirm, saveChapter, setActiveId, setAiOpen, toast]);
 
+  const restoreToBaseline = useCallback(async () => {
+    if (!baseline || !form) return;
+    if (!dirty) return;
+    const ok = await confirm.confirm({
+      title: "恢复到已保存版本？",
+      description: "将丢弃未保存修改。",
+      confirmText: "恢复",
+      danger: true,
+    });
+    if (!ok) return;
+    setForm({ ...baseline });
+    toast.toastSuccess("已恢复到已保存版本");
+  }, [baseline, confirm, dirty, form, setForm, toast]);
+
+  const openPolish = useCallback(
+    (mode: "post_edit" | "content_optimize") => {
+      if (!activeChapter) {
+        toast.toastWarning("请先选择章节再进行润色/优化。");
+        return;
+      }
+      setGenForm((v) => ({
+        ...v,
+        post_edit: mode === "post_edit",
+        post_edit_sanitize: mode === "post_edit",
+        content_optimize: mode === "content_optimize",
+      }));
+      setAiOpen(true);
+    },
+    [activeChapter, setAiOpen, setGenForm, toast],
+  );
+
+  const runSelfCheck = useCallback(async () => {
+    if (!activeChapter || !form) {
+      toast.toastWarning("请先选择章节再进行自检。");
+      return;
+    }
+    analysis.openModal();
+    await analysis.analyzeChapter();
+  }, [activeChapter, analysis, form, toast]);
+
+  const autoOutlineAndChapters = useCallback(async () => {
+    if (!projectId) return;
+    if (quickStartRunning) return;
+    if (!preset) {
+      toast.toastError("请先在 Prompts 页保存 LLM 配置");
+      navigate(`/projects/${projectId}/prompts`);
+      return;
+    }
+
+    const ok = await confirm.confirm({
+      title: "一键生成大纲并创建章节骨架？",
+      description: "将调用模型生成大纲，并创建章节骨架，完成后会跳到首章生成。",
+      confirmText: "开始",
+    });
+    if (!ok) return;
+
+    setQuickStartRunning(true);
+    try {
+      const headers: Record<string, string> = { "X-LLM-Provider": preset.provider };
+      const outlineGen = await apiJson<OutlineGenResult>(`/api/projects/${projectId}/outline/generate`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          requirements: {
+            chapter_count: 12,
+            tone: "偏现实，克制但有爆点",
+            pacing: "前3章强钩子，中段升级，结尾反转",
+          },
+          context: {
+            include_world_setting: true,
+            include_characters: true,
+          },
+        }),
+      });
+
+      const outlineMd = outlineGen.data.outline_md ?? "";
+      const genChapters = outlineGen.data.chapters ?? [];
+      if (genChapters.length === 0) {
+        toast.toastError("已生成大纲，但未解析出章节结构；请到大纲页手动调整并创建章节。");
+        navigate(`/projects/${projectId}/outline`);
+        return;
+      }
+
+      await apiJson<{ outline: Outline }>(`/api/projects/${projectId}/outlines`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: `AI 大纲 ${new Date().toISOString().slice(0, 16).replace("T", " ")}`,
+          content_md: outlineMd,
+          structure: { chapters: genChapters },
+        }),
+      });
+
+      const payload = {
+        chapters: genChapters.map((c) => ({
+          number: c.number,
+          title: c.title,
+          plan: (c.beats ?? []).join("；"),
+        })),
+      };
+
+      const created = await chapterStore.bulkCreateProjectChapters(projectId, payload);
+      toast.toastSuccess(`已生成大纲并创建 ${created.length} 章`);
+      bumpWizardLocal();
+      await Promise.all([refreshWriting(), refreshChapters(), refreshWizard()]);
+      const first = [...created].sort((a, b) => (a.number ?? 0) - (b.number ?? 0))[0];
+      if (first) {
+        setActiveId(first.id);
+        setAiOpen(true);
+      }
+    } catch (e) {
+      const err =
+        e instanceof ApiError
+          ? e
+          : new ApiError({ code: "UNKNOWN", message: String(e), requestId: "unknown", status: 0 });
+      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+    } finally {
+      setQuickStartRunning(false);
+    }
+  }, [
+    bumpWizardLocal,
+    confirm,
+    navigate,
+    preset,
+    projectId,
+    quickStartRunning,
+    refreshChapters,
+    refreshWizard,
+    refreshWriting,
+    setActiveId,
+    setAiOpen,
+    toast,
+  ]);
+
+  const selectAdjacentChapter = useCallback(
+    (direction: -1 | 1) => {
+      if (chapters.length === 0) return;
+      const sorted = [...chapters].sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
+      const currentIndex = activeId ? sorted.findIndex((c) => c.id === activeId) : -1;
+      const nextIndex =
+        currentIndex < 0 ? (direction > 0 ? 0 : sorted.length - 1) : currentIndex + direction;
+      const next = sorted[nextIndex] ?? null;
+      if (!next) return;
+      void requestSelectChapter(next.id);
+    },
+    [activeId, chapters, requestSelectChapter],
+  );
+
+  useEffect(() => {
+    const overlayOpen =
+      aiOpen ||
+      promptInspectorOpen ||
+      postEditCompareOpen ||
+      contentOptimizeCompareOpen ||
+      chapterDiffOpen ||
+      tablesOpen ||
+      contextPreviewOpen ||
+      memoryUpdateOpen ||
+      foreshadowOpen ||
+      chapterListOpen ||
+      batch.open ||
+      analysis.open ||
+      history.open ||
+      chapterCrud.createOpen;
+
+    if (overlayOpen) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing) return;
+
+      const key = e.key.toLowerCase();
+      const mod = e.metaKey || e.ctrlKey;
+
+      if (mod && !e.shiftKey && !e.altKey && key === "enter") {
+        if (!activeChapter) {
+          toast.toastWarning("请先选择章节再进行 AI 生成。");
+          return;
+        }
+        e.preventDefault();
+        setAiOpen(true);
+        return;
+      }
+
+      if (!mod && e.altKey && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        if (isEditableTarget(e.target)) return;
+        e.preventDefault();
+        selectAdjacentChapter(e.key === "ArrowUp" ? -1 : 1);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    activeChapter,
+    aiOpen,
+    analysis.open,
+    batch.open,
+    chapterCrud.createOpen,
+    chapterDiffOpen,
+    chapterListOpen,
+    contentOptimizeCompareOpen,
+    contextPreviewOpen,
+    foreshadowOpen,
+    history.open,
+    memoryUpdateOpen,
+    postEditCompareOpen,
+    promptInspectorOpen,
+    selectAdjacentChapter,
+    setAiOpen,
+    tablesOpen,
+    toast,
+  ]);
+
   useEffect(() => {
     const pending = autoGenerateNextRef.current;
     if (!pending) return;
@@ -361,6 +667,59 @@ export function WritingPage() {
     autoGenerateNextRef.current = null;
     void generate(pending.mode);
   }, [activeChapter, form, generate, generating]);
+
+  const planField = (
+    <label className="grid gap-1">
+      <span className="text-xs text-subtext">本章要点</span>
+      <textarea
+        className="textarea atelier-content"
+        name="plan"
+        rows={4}
+        value={form?.plan ?? ""}
+        readOnly={isDoneReadonly}
+        onChange={(e) => {
+          setForm((v) => (v ? { ...v, plan: e.target.value } : v));
+        }}
+      />
+    </label>
+  );
+
+  const summaryField = (
+    <label className="grid gap-1">
+      <span className="text-xs text-subtext">摘要（可选）</span>
+      <textarea
+        className="textarea atelier-content"
+        name="summary"
+        rows={3}
+        value={form?.summary ?? ""}
+        readOnly={isDoneReadonly}
+        onChange={(e) => {
+          setForm((v) => (v ? { ...v, summary: e.target.value } : v));
+        }}
+      />
+    </label>
+  );
+
+  const contentField = (
+    <label className="grid gap-1">
+      <span className="text-xs text-subtext">正文（Markdown）</span>
+      <MarkdownEditor
+        value={form?.content_md ?? ""}
+        onChange={(next) => {
+          setForm((v) => (v ? { ...v, content_md: next } : v));
+        }}
+        placeholder="开始写作..."
+        minRows={16}
+        name="content_md"
+        readOnly={isDoneReadonly}
+        tab={contentEditorTab}
+        onTabChange={setContentEditorTab}
+        textareaRef={(el) => {
+          contentTextareaRef.current = el;
+        }}
+      />
+    </label>
+  );
 
   if (loading) return <ToolContent className="text-subtext">加载中...</ToolContent>;
 
@@ -414,13 +773,71 @@ export function WritingPage() {
             chapters={chapters}
             activeId={activeId}
             onSelectChapter={(chapterId) => void requestSelectChapter(chapterId)}
+            emptyState={chapterListEmptyState}
           />
         </aside>
 
         <section className="min-w-0 flex-1">
-          {!activeChapter || !form ? (
+                    {!activeChapter || !form ? (
             <div className="mx-auto w-full max-w-4xl rounded-atelier border border-border bg-surface p-8 text-sm text-subtext shadow-sm">
-              请选择或新建章节开始写作。
+              {chapters.length === 0 ? (
+                <div className="grid gap-4">
+                  <div className="font-content text-xl text-ink">还没有章节</div>
+                  <div className="text-sm text-subtext">建议按 3 步完成首章生成：</div>
+                  <ol className="list-decimal pl-5 text-sm text-subtext">
+                    <li>完善大纲，或使用 AI 生成大纲。</li>
+                    <li>从大纲生成章节骨架。</li>
+                    <li>回到写作页，用 AI 生成首章或开始编辑。</li>
+                  </ol>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      className="btn btn-primary"
+                      disabled={quickStartRunning}
+                      onClick={() => void autoOutlineAndChapters()}
+                      type="button"
+                    >
+                      {quickStartRunning ? "生成中..." : "一键生成大纲+章节"}
+                    </button>
+                    <button className="btn btn-secondary" onClick={chapterCrud.openCreate} type="button">
+                      新建章节
+                    </button>
+                    <button
+                      className="btn btn-secondary"
+                      disabled={!projectId}
+                      onClick={() => {
+                        if (!projectId) return;
+                        navigate(`/projects/${projectId}/outline`);
+                      }}
+                      type="button"
+                    >
+                      前往大纲
+                    </button>
+                    <button
+                      className="btn btn-secondary"
+                      disabled={!projectId}
+                      onClick={() => {
+                        if (!projectId) return;
+                        navigate(`/projects/${projectId}/wizard`);
+                      }}
+                      type="button"
+                    >
+                      开工向导
+                    </button>
+                  </div>
+                  <div className="text-xs text-subtext">
+                    快捷键：Ctrl/Cmd+Enter 打开 AI 生成 · Alt+Up/Down 切换章节
+                  </div>
+                </div>
+              ) : (
+                <div className="grid gap-3 text-sm text-subtext">
+                  <div>请选择章节开始写作，或新建章节。</div>
+                  <div className="flex flex-wrap gap-2">
+                    <button className="btn btn-primary" onClick={chapterCrud.openCreate} type="button">
+                      新建章节
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
             <div className="mx-auto w-full max-w-4xl rounded-atelier border border-border bg-surface p-5 shadow-sm">
@@ -443,7 +860,13 @@ export function WritingPage() {
                   <div className="font-content text-2xl text-ink">
                     第 {activeChapter.number} 章 <span className="text-subtext">{dirty ? "（未保存）" : ""}</span>
                   </div>
-                  <div className="mt-1 text-xs text-subtext">updated_at: {activeChapter.updated_at}</div>
+                  <div className="mt-1 text-xs text-subtext">
+                    已保存：{activeChapter.updated_at}
+                    <span className="mx-2 text-subtext/60">·</span>
+                    状态：{dirty ? "未保存" : "已保存"}
+                    <span className="mx-2 text-subtext/60">·</span>
+                    自动保存：开启
+                  </div>
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-2">
                   <button
@@ -453,6 +876,14 @@ export function WritingPage() {
                     type="button"
                   >
                     分析
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    disabled={!activeChapter || loadingChapter}
+                    onClick={() => setChapterDiffOpen(true)}
+                    type="button"
+                  >
+                    对比
                   </button>
                   <button
                     className="btn btn-secondary"
@@ -472,6 +903,14 @@ export function WritingPage() {
                     type="button"
                   >
                     删除
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    disabled={!dirty || loadingChapter || saving || generating}
+                    onClick={() => void restoreToBaseline()}
+                    type="button"
+                  >
+                    恢复到已保存
                   </button>
                   <button
                     className="btn btn-secondary"
@@ -529,63 +968,128 @@ export function WritingPage() {
                   >
                     <option value="planned">{humanizeChapterStatus("planned")}</option>
                     <option value="drafting">{humanizeChapterStatus("drafting")}</option>
+                    <option value="proofreading">{humanizeChapterStatus("proofreading")}</option>
                     <option value="done">{humanizeChapterStatus("done")}</option>
                   </select>
                   <div className="text-[11px] text-subtext">
-                    提示：保存不等于定稿。仅状态为 {humanizeChapterStatus("done")} 的章节允许进行记忆更新（Memory
-                    Update）写入长期记忆； 定稿章默认只读，修改请先切回 {humanizeChapterStatus("drafting")}。
+                    状态流转：{humanizeChapterStatus("planned")} → {humanizeChapterStatus("drafting")} →{" "}
+                    {humanizeChapterStatus("proofreading")} → {humanizeChapterStatus("done")}。仅状态为{" "}
+                    {humanizeChapterStatus("done")} 的章节允许进行记忆更新（Memory Update）写入长期记忆；定稿章默认只读，
+                    修改请先切回 {humanizeChapterStatus("drafting")}。
                   </div>
                 </label>
               </div>
 
-              <div className="mt-4 grid gap-3">
-                <label className="grid gap-1">
-                  <span className="text-xs text-subtext">本章要点</span>
-                  <textarea
-                    className="textarea atelier-content"
-                    name="plan"
-                    rows={4}
-                    value={form.plan}
-                    readOnly={isDoneReadonly}
-                    onChange={(e) => {
-                      setForm((v) => (v ? { ...v, plan: e.target.value } : v));
-                    }}
-                  />
-                </label>
-                <label className="grid gap-1">
-                  <span className="text-xs text-subtext">正文（Markdown）</span>
-                  <MarkdownEditor
-                    value={form.content_md}
-                    onChange={(next) => {
-                      setForm((v) => (v ? { ...v, content_md: next } : v));
-                    }}
-                    placeholder="开始写作..."
-                    minRows={16}
-                    name="content_md"
-                    readOnly={isDoneReadonly}
-                    tab={contentEditorTab}
-                    onTabChange={setContentEditorTab}
-                    textareaRef={(el) => {
-                      contentTextareaRef.current = el;
-                    }}
-                  />
-                </label>
-                <label className="grid gap-1">
-                  <span className="text-xs text-subtext">摘要（可选）</span>
-                  <textarea
-                    className="textarea atelier-content"
-                    name="summary"
-                    rows={3}
-                    value={form.summary}
-                    readOnly={isDoneReadonly}
-                    onChange={(e) => {
-                      setForm((v) => (v ? { ...v, summary: e.target.value } : v));
-                    }}
-                  />
-                </label>
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-subtext">视图</span>
+                  {editorViewOptions.map((view) => (
+                    <button
+                      key={view.key}
+                      className={editorView === view.key ? "btn btn-primary" : "btn btn-secondary"}
+                      onClick={() => setEditorView(view.key)}
+                      type="button"
+                    >
+                      {view.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="text-xs text-subtext">{editorViewHint}</div>
               </div>
 
-              <div className="mt-4 text-xs text-subtext">快捷键：Ctrl/Cmd + S 保存</div>
+              {editorView === "outline" ? (
+                <div className="mt-4 grid gap-3">
+                  {planField}
+                  {summaryField}
+                </div>
+              ) : editorView === "draft" ? (
+                <div className="mt-4 grid gap-3">
+                  {planField}
+                  {contentField}
+                  {summaryField}
+                </div>
+              ) : editorView === "final" ? (
+                <div className="mt-4 grid gap-3">
+                  <div className="rounded-atelier border border-border bg-surface p-4">
+                    <div className="text-xs text-subtext">正文预览</div>
+                    <div className="atelier-content max-w-none pt-3 text-ink">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {form.content_md ? form.content_md : "_（空）_"}
+                      </ReactMarkdown>
+                    </div>
+                  </div>
+                  <div className="rounded-atelier border border-border bg-surface p-4">
+                    <div className="text-xs text-subtext">摘要</div>
+                    <div className="mt-2 whitespace-pre-wrap text-sm text-ink">{form.summary?.trim() || "（空）"}</div>
+                  </div>
+                  <div className="rounded-atelier border border-border bg-surface p-4">
+                    <div className="text-sm text-ink">记忆摘要层</div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                      <div className="rounded-atelier border border-border bg-canvas p-3">
+                        <div className="text-[11px] text-subtext">章节</div>
+                        <div className="mt-1 text-sm text-ink">{form.title?.trim() || "（未命名）"}</div>
+                        <div className="mt-1 text-xs text-subtext">
+                          {form.summary?.trim() || "（摘要为空，可在草稿视图补充）"}
+                        </div>
+                      </div>
+                      <div className="rounded-atelier border border-border bg-canvas p-3">
+                        <div className="text-[11px] text-subtext">情节</div>
+                        <div className="mt-1 whitespace-pre-wrap text-xs text-ink">
+                          {form.plan?.trim() || "（要点为空，可在大纲/草稿视图补充）"}
+                        </div>
+                      </div>
+                      <div className="rounded-atelier border border-border bg-canvas p-3">
+                        <div className="text-[11px] text-subtext">人物弧</div>
+                        {selectedCharacterNames.length ? (
+                          <div className="mt-1 flex flex-wrap gap-2 text-xs text-ink">
+                            {selectedCharacterNames.map((name) => (
+                              <span key={name} className="rounded-atelier border border-border bg-surface px-2 py-0.5">
+                                {name}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="mt-1 text-xs text-subtext">（未选择角色，可在 AI 生成面板中勾选）</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-4 grid gap-3">
+                  <div className="rounded-atelier border border-border bg-surface p-4">
+                    <div className="text-sm text-ink">润色与优化</div>
+                    <div className="mt-1 text-xs text-subtext">
+                      将调用 AI 进行润色或正文优化；生成结果不会自动保存，可用“章节对比”查看差异。
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button className="btn btn-primary" onClick={() => openPolish("post_edit")} type="button">
+                        一键润色
+                      </button>
+                      <button
+                        className="btn btn-secondary"
+                        onClick={() => openPolish("content_optimize")}
+                        type="button"
+                      >
+                        正文优化
+                      </button>
+                      <button
+                        className="btn btn-secondary"
+                        disabled={!activeChapter}
+                        onClick={() => setChapterDiffOpen(true)}
+                        type="button"
+                      >
+                        查看对比
+                      </button>
+                    </div>
+                  </div>
+                  <div className="rounded-atelier border border-border bg-canvas p-3 text-xs text-subtext">
+                    提示：若需修改润色参数，可先打开 AI 生成面板再调整高级选项。
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-4 text-xs text-subtext">快捷键：Ctrl/Cmd+S 保存 · Ctrl/Cmd+Enter AI 生成 · Alt+Up/Down 切换章节</div>
             </div>
           )}
         </section>
@@ -670,6 +1174,7 @@ export function WritingPage() {
               setChapterListOpen(false);
               void requestSelectChapter(chapterId);
             }}
+            emptyState={chapterListEmptyState}
           />
         </div>
       </Drawer>
@@ -693,6 +1198,7 @@ export function WritingPage() {
         onGenerateReplace={() => void generate("replace")}
         onCancelGenerate={abortGenerate}
         onOpenPromptInspector={() => setPromptInspectorOpen(true)}
+        onOpenSelfCheck={runSelfCheck}
         postEditCompareAvailable={Boolean(postEditCompare)}
         onOpenPostEditCompare={() => setPostEditCompareOpen(true)}
         contentOptimizeCompareAvailable={Boolean(contentOptimizeCompare)}
@@ -719,6 +1225,15 @@ export function WritingPage() {
         appliedChoice={contentOptimizeCompare?.appliedChoice ?? "content_optimize"}
         onApplyRaw={() => void applyContentOptimizeVariant("raw")}
         onApplyOptimized={() => void applyContentOptimizeVariant("content_optimize")}
+      />
+
+      <ChapterDiffDrawer
+        open={chapterDiffOpen && Boolean(activeChapter)}
+        onClose={() => setChapterDiffOpen(false)}
+        baselineContentMd={baseline?.content_md ?? ""}
+        currentContentMd={form?.content_md ?? ""}
+        baselineLabel={activeChapter?.updated_at ? `已保存：${activeChapter.updated_at}` : "已保存版本"}
+        currentLabel={dirty ? "当前草稿（未保存）" : "当前版本"}
       />
 
       <PromptInspectorDrawer
@@ -814,3 +1329,10 @@ export function WritingPage() {
     </ToolContent>
   );
 }
+
+
+
+
+
+
+

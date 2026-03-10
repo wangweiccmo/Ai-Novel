@@ -7,7 +7,7 @@ export type LLMProvider =
   | "gemini"
   | "deepseek";
 
-export type ChapterStatus = "planned" | "drafting" | "done";
+export type ChapterStatus = "planned" | "drafting" | "proofreading" | "done";
 
 export interface Project {
   id: string;
@@ -187,6 +187,17 @@ export interface PromptPreset {
   updated_at?: string | null;
 }
 
+export interface PromptPresetVersion {
+  id: string;
+  project_id: string;
+  preset_id: string;
+  actor_user_id?: string | null;
+  version: number;
+  preset_version: number;
+  note?: string | null;
+  created_at?: string | null;
+}
+
 export interface PromptBlock {
   id: string;
   preset_id: string;
@@ -239,6 +250,12 @@ export interface LLMPreset {
   max_tokens_limit?: number | null;
   max_tokens_recommended?: number | null;
   context_window_limit?: number | null;
+  pricing?: {
+    input_per_million?: number | null;
+    output_per_million?: number | null;
+    currency?: string;
+    source?: string;
+  };
   presence_penalty?: number | null;
   frequency_penalty?: number | null;
   top_k?: number | null;
@@ -274,12 +291,22 @@ export interface LLMTaskCatalogItem {
   label: string;
   group: string;
   description: string;
+  recommended_provider?: LLMProvider | null;
+  recommended_model?: string | null;
+  recommended_note?: string | null;
+  cost_tier?: string | null;
 }
 
 export interface LLMTaskPreset extends LLMPreset {
   task_key: string;
   llm_profile_id?: string | null;
   source?: string;
+  pricing?: {
+    input_per_million?: number | null;
+    output_per_million?: number | null;
+    currency?: string;
+    source?: string;
+  };
 }
 
 export interface LLMModelItem {

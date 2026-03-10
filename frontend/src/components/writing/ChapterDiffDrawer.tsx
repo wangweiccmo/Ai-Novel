@@ -1,22 +1,20 @@
 import { useEffect, useId, useMemo, useState } from "react";
 
-import { Drawer } from "../ui/Drawer";
 import { buildNaiveUnifiedLineDiff } from "../../lib/textDiff";
+import { Drawer } from "../ui/Drawer";
 
 type Props = {
   open: boolean;
   onClose: () => void;
-  rawContentMd: string;
-  editedContentMd: string;
-  requestId: string | null;
-  appliedChoice: "raw" | "post_edit";
-  onApplyRaw: () => void;
-  onApplyPostEdit: () => void;
+  baselineContentMd: string;
+  currentContentMd: string;
+  baselineLabel?: string;
+  currentLabel?: string;
 };
 
-type ViewMode = "diff" | "raw" | "post_edit";
+type ViewMode = "diff" | "baseline" | "current";
 
-export function PostEditCompareDrawer(props: Props) {
+export function ChapterDiffDrawer(props: Props) {
   const { onClose, open } = props;
   const titleId = useId();
   const [mode, setMode] = useState<ViewMode>("diff");
@@ -32,22 +30,13 @@ export function PostEditCompareDrawer(props: Props) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose, open]);
 
-  const raw = String(props.rawContentMd ?? "");
-  const edited = String(props.editedContentMd ?? "");
+  const baseline = String(props.baselineContentMd ?? "");
+  const current = String(props.currentContentMd ?? "");
+  const diffText = useMemo(() => buildNaiveUnifiedLineDiff(baseline, current), [baseline, current]);
 
-  const diffText = useMemo(() => buildNaiveUnifiedLineDiff(raw, edited), [edited, raw]);
-
-  const applyRaw = () => {
-    props.onApplyRaw();
-    onClose();
-  };
-
-  const applyPostEdit = () => {
-    props.onApplyPostEdit();
-    onClose();
-  };
-
-  const hasDiff = raw.trim() !== edited.trim();
+  const hasDiff = baseline.trim() !== current.trim();
+  const baselineLabel = props.baselineLabel ?? "已保存版本";
+  const currentLabel = props.currentLabel ?? "当前草稿";
 
   return (
     <Drawer
@@ -60,16 +49,10 @@ export function PostEditCompareDrawer(props: Props) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="font-content text-2xl text-ink" id={titleId}>
-            润色对比
+            章节对比
           </div>
           <div className="mt-1 text-xs text-subtext">
-            {props.requestId ? (
-              <>
-                request_id: <span className="font-mono">{props.requestId}</span>
-              </>
-            ) : (
-              "request_id: （未知）"
-            )}
+            对比对象：正文（Markdown） · {baselineLabel} vs {currentLabel}
           </div>
         </div>
         <button className="btn btn-secondary" onClick={onClose} type="button">
@@ -80,48 +63,31 @@ export function PostEditCompareDrawer(props: Props) {
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-subtext">视图</span>
-          {(["diff", "raw", "post_edit"] as const).map((v) => (
+          {(["diff", "baseline", "current"] as const).map((v) => (
             <button
               key={v}
               className={mode === v ? "btn btn-primary" : "btn btn-secondary"}
               onClick={() => setMode(v)}
               type="button"
             >
-              {v === "diff" ? "差异" : v === "raw" ? "原稿" : "后处理稿"}
+              {v === "diff" ? "差异" : v === "baseline" ? baselineLabel : currentLabel}
             </button>
           ))}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            className={props.appliedChoice === "raw" ? "btn btn-primary" : "btn btn-secondary"}
-            onClick={applyRaw}
-            type="button"
-          >
-            采用原稿
-          </button>
-          <button
-            className={props.appliedChoice === "post_edit" ? "btn btn-primary" : "btn btn-secondary"}
-            onClick={applyPostEdit}
-            type="button"
-          >
-            采用后处理稿
-          </button>
         </div>
       </div>
 
       <div className="mt-3 text-[11px] text-subtext">
-        {hasDiff ? "提示：- 为原稿行，+ 为后处理行。" : "提示：原稿与后处理稿内容一致，无差异。"}
+        {hasDiff ? "提示：- 表示删除行，+ 表示新增行。" : "提示：已保存版本与当前草稿内容一致，无差异。"}
       </div>
 
       <div className="mt-4">
-        {mode === "raw" ? (
+        {mode === "baseline" ? (
           <pre className="max-h-[60vh] overflow-auto rounded-atelier border border-border bg-surface p-4 text-xs text-ink">
-            {raw || "（空）"}
+            {baseline || "（空）"}
           </pre>
-        ) : mode === "post_edit" ? (
+        ) : mode === "current" ? (
           <pre className="max-h-[60vh] overflow-auto rounded-atelier border border-border bg-surface p-4 text-xs text-ink">
-            {edited || "（空）"}
+            {current || "（空）"}
           </pre>
         ) : (
           <pre className="max-h-[60vh] overflow-auto rounded-atelier border border-border bg-surface p-4 text-xs text-ink">

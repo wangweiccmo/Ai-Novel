@@ -12,6 +12,7 @@ export function humanizeChapterStatus(status: string): string {
   const s = String(status || "").trim();
   if (s === "planned") return formatWithKey("计划中", s);
   if (s === "drafting") return formatWithKey("草稿", s);
+  if (s === "proofreading") return formatWithKey("校对", s);
   if (s === "done") return formatWithKey("定稿", s);
   return s || "未知";
 }

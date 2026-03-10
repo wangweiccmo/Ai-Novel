@@ -43,6 +43,16 @@ type ProposeResult = {
   idempotent: boolean;
   change_set: MemoryChangeSet;
   items: MemoryChangeSetItem[];
+  conflicts?: Array<{
+    item_index?: number;
+    target_table?: string;
+    target_id?: string | null;
+    conflict_type?: string;
+    field?: string;
+    message?: string;
+    existing?: unknown;
+    proposed?: unknown;
+  }>;
 };
 
 type ApplyResult = {
@@ -479,6 +489,20 @@ export function MemoryUpdateDrawer(props: Props) {
                   change_set_id: {proposeResult.change_set.id}{" "}
                   {proposeResult.change_set.request_id ? `| request_id: ${proposeResult.change_set.request_id}` : ""}
                 </div>
+
+                {proposeResult.conflicts && proposeResult.conflicts.length ? (
+                  <details className="mt-2 rounded-atelier border border-border bg-surface p-2">
+                    <summary className="ui-transition-fast cursor-pointer text-xs text-subtext hover:text-ink">
+                      发现冲突 {proposeResult.conflicts.length} 条（点击查看）
+                    </summary>
+                    <pre className="mt-2 max-h-56 overflow-auto rounded-atelier border border-border bg-surface p-2 text-[11px] text-ink">
+                      {safeJsonStringify(proposeResult.conflicts)}
+                    </pre>
+                    <div className="mt-1 text-[11px] text-subtext">
+                      提示：冲突不会阻止提案，但建议先核对再应用。
+                    </div>
+                  </details>
+                ) : null}
 
                 <div className="mt-3 grid gap-2">
                   {groups.map(([table, items]) => (

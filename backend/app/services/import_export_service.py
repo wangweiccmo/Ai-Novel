@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from html.parser import HTMLParser
+from io import BytesIO
 import json
 import re
+import zipfile
 from collections import Counter
 from typing import Any
+from xml.etree import ElementTree as ET
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -31,6 +35,181 @@ from app.services.vector_rag_service import VectorChunk, ingest_chunks, purge_pr
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9\u4e00-\u9fff]{2,}")
+
+MAX_IMPORT_BYTES = 5_000_000
+MAX_IMPORT_CHARS = 5_000_000
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+EPUB_MIME = "application/epub+zip"
+
+
+class _HtmlTextExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"br"}:
+            self._push_break()
+            return
+        if tag in {"p", "div", "section", "article", "header", "footer", "aside", "h1", "h2", "h3", "h4", "h5", "h6"}:
+            self._push_block()
+        if tag in {"li"}:
+            self._push_block()
+            self._parts.append("- ")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"p", "div", "section", "article", "header", "footer", "aside", "h1", "h2", "h3", "h4", "h5", "h6"}:
+            self._push_block()
+        if tag in {"li", "ul", "ol"}:
+            self._push_block()
+
+    def handle_data(self, data: str) -> None:
+        if not data:
+            return
+        self._parts.append(data)
+
+    def _push_break(self) -> None:
+        if not self._parts:
+            self._parts.append("\n")
+            return
+        if self._parts[-1].endswith("\n"):
+            return
+        self._parts.append("\n")
+
+    def _push_block(self) -> None:
+        if not self._parts:
+            self._parts.append("\n\n")
+            return
+        tail = self._parts[-1]
+        if tail.endswith("\n\n"):
+            return
+        if tail.endswith("\n"):
+            self._parts.append("\n")
+            return
+        self._parts.append("\n\n")
+
+    def get_text(self) -> str:
+        return "".join(self._parts)
+
+
+def _normalize_import_text(text: str) -> str:
+    if not text:
+        return ""
+    s = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.strip() for line in s.split("\n")]
+    out: list[str] = []
+    empty_run = 0
+    for line in lines:
+        if not line:
+            empty_run += 1
+            if empty_run > 1:
+                continue
+            out.append("")
+            continue
+        empty_run = 0
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+def normalize_import_content_type(filename: str, content_type: str | None) -> str:
+    name = str(filename or "").lower()
+    raw = str(content_type or "").strip().lower()
+
+    if raw in {"md", "markdown", "text/markdown"} or name.endswith((".md", ".markdown")):
+        return "md"
+    if raw in {"docx", DOCX_MIME} or name.endswith(".docx"):
+        return "docx"
+    if raw in {"epub", EPUB_MIME} or name.endswith(".epub"):
+        return "epub"
+    if raw in {"txt", "text/plain"} or name.endswith(".txt"):
+        return "txt"
+    if raw.startswith("text/"):
+        return "txt"
+    return "txt"
+
+
+def _extract_docx_text(data: bytes) -> str:
+    with zipfile.ZipFile(BytesIO(data)) as zf:
+        xml_bytes: bytes | None = None
+        for candidate in ("word/document.xml", "word/document2.xml"):
+            try:
+                xml_bytes = zf.read(candidate)
+                break
+            except KeyError:
+                continue
+        if xml_bytes is None:
+            for name in zf.namelist():
+                if name.lower().endswith("document.xml") and name.lower().startswith("word/"):
+                    xml_bytes = zf.read(name)
+                    break
+        if xml_bytes is None:
+            return ""
+
+    root = ET.fromstring(xml_bytes)
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    paras: list[str] = []
+    for p in root.findall(".//w:p", ns):
+        parts: list[str] = []
+        for node in p.iter():
+            tag = node.tag
+            if tag == f"{{{ns['w']}}}t":
+                parts.append(node.text or "")
+            elif tag == f"{{{ns['w']}}}tab":
+                parts.append("\t")
+            elif tag in {f"{{{ns['w']}}}br", f"{{{ns['w']}}}cr"}:
+                parts.append("\n")
+        joined = "".join(parts).strip()
+        if joined:
+            paras.append(joined)
+    return "\n\n".join(paras)
+
+
+def _extract_epub_text(data: bytes) -> str:
+    with zipfile.ZipFile(BytesIO(data)) as zf:
+        html_files = [
+            name
+            for name in zf.namelist()
+            if name.lower().endswith((".xhtml", ".html", ".htm")) and not name.lower().startswith("meta-inf/")
+        ]
+        html_files = [name for name in html_files if "toc" not in name.lower() and "nav" not in name.lower()]
+        parts: list[str] = []
+        for name in sorted(html_files):
+            raw = zf.read(name)
+            try:
+                text = raw.decode("utf-8", errors="ignore")
+            except Exception:
+                text = raw.decode(errors="ignore")
+            parser = _HtmlTextExtractor()
+            parser.feed(text)
+            extracted = _normalize_import_text(parser.get_text())
+            if extracted:
+                parts.append(extracted)
+        return "\n\n".join(parts)
+
+
+def extract_import_text(filename: str, content_type: str | None, data: bytes) -> tuple[str, str]:
+    kind = normalize_import_content_type(filename, content_type)
+    if kind in {"docx", "epub"}:
+        try:
+            if kind == "docx":
+                text = _extract_docx_text(data)
+            else:
+                text = _extract_epub_text(data)
+        except Exception:
+            return "", kind
+        text = _normalize_import_text(text)
+    else:
+        try:
+            text = data.decode("utf-8", errors="ignore")
+        except Exception:
+            text = data.decode(errors="ignore")
+
+    if not text.strip():
+        return "", kind
+
+    if len(text) > MAX_IMPORT_CHARS:
+        text = text[:MAX_IMPORT_CHARS]
+    return text, kind
 
 
 def _chunk_text(text: str, *, chunk_size: int, overlap: int) -> list[str]:

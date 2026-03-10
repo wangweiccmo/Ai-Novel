@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { createRequestSeqGuard } from "../../lib/requestSeqGuard";
+import { buildNaiveUnifiedLineDiff } from "../../lib/textDiff";
 import { ApiError, apiDownloadAttachment, apiJson } from "../../services/apiClient";
 import { Drawer } from "../ui/Drawer";
 import { useToast } from "../ui/toast";
@@ -25,6 +26,7 @@ export function GenerationHistoryDrawer(props: Props) {
   const [pipelineError, setPipelineError] = useState<{ code: string; message: string; requestId?: string } | null>(
     null,
   );
+  const [compareRunIds, setCompareRunIds] = useState<string[]>([]);
   const pipelineGuardRef = useRef(createRequestSeqGuard());
 
   const selectedRun = props.selectedRun;
@@ -134,6 +136,34 @@ export function GenerationHistoryDrawer(props: Props) {
     });
   }, [pipelineRuns]);
 
+  const allRuns = useMemo(() => {
+    const merged = new Map<string, GenerationRun>();
+    for (const r of props.runs) merged.set(r.id, r);
+    for (const r of pipelineRuns) merged.set(r.id, r);
+    return [...merged.values()];
+  }, [pipelineRuns, props.runs]);
+
+  const compareRuns = useMemo(
+    () => compareRunIds.map((id) => allRuns.find((r) => r.id === id) ?? null).filter(Boolean) as GenerationRun[],
+    [allRuns, compareRunIds],
+  );
+
+  const toggleCompare = useCallback((run: GenerationRun) => {
+    setCompareRunIds((prev) => {
+      const exists = prev.includes(run.id);
+      if (exists) return prev.filter((id) => id !== run.id);
+      if (prev.length >= 2) return [prev[1], run.id];
+      return [...prev, run.id];
+    });
+  }, []);
+
+  const compareDiff = useMemo(() => {
+    if (compareRuns.length !== 2) return "";
+    const a = String(compareRuns[0]?.output_text ?? "");
+    const b = String(compareRuns[1]?.output_text ?? "");
+    return buildNaiveUnifiedLineDiff(a, b);
+  }, [compareRuns]);
+
   return (
     <Drawer
       open={open}
@@ -165,8 +195,9 @@ export function GenerationHistoryDrawer(props: Props) {
                 {props.runs.map((r) => {
                   const active = props.selectedRun?.id === r.id;
                   const failed = Boolean(r.error);
+                  const compareIndex = compareRunIds.indexOf(r.id);
                   return (
-                    <button
+                    <div
                       key={r.id}
                       className={
                         active
@@ -174,16 +205,40 @@ export function GenerationHistoryDrawer(props: Props) {
                           : "ui-focus-ring ui-transition-fast rounded-atelier px-3 py-2 text-left text-sm text-subtext hover:bg-canvas hover:text-ink"
                       }
                       onClick={() => props.onSelectRun(r)}
-                      type="button"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          props.onSelectRun(r);
+                        }
+                      }}
+                      role="button"
+                      tabIndex={0}
                     >
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0 truncate">
                           <span className="mr-2 text-xs text-subtext">{new Date(r.created_at).toLocaleString()}</span>
                           <span className="truncate">{r.type}</span>
                         </div>
-                        <span className="shrink-0 text-[11px] text-subtext">{failed ? "failed" : "ok"}</span>
+                        <div className="flex items-center gap-2">
+                          {compareIndex >= 0 ? (
+                            <span className="rounded-atelier bg-accent/15 px-2 py-0.5 text-[11px] text-accent">
+                              {compareIndex === 0 ? "A" : "B"}
+                            </span>
+                          ) : null}
+                          <button
+                            className="btn btn-ghost px-2 py-1 text-[11px]"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleCompare(r);
+                            }}
+                            type="button"
+                          >
+                            {compareIndex >= 0 ? "移除对比" : "加入对比"}
+                          </button>
+                          <span className="shrink-0 text-[11px] text-subtext">{failed ? "failed" : "ok"}</span>
+                        </div>
                       </div>
-                    </button>
+                    </div>
                   );
                 })}
               </div>
@@ -382,6 +437,36 @@ export function GenerationHistoryDrawer(props: Props) {
               </div>
             )}
           </div>
+        </div>
+
+        <div className="rounded-atelier border border-border bg-surface p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-sm text-ink">A/B 生成对比</div>
+            <button
+              className="btn btn-secondary"
+              disabled={compareRunIds.length === 0}
+              onClick={() => setCompareRunIds([])}
+              type="button"
+            >
+              清空对比
+            </button>
+          </div>
+          {compareRuns.length < 2 ? (
+            <div className="mt-2 text-xs text-subtext">从左侧列表选择两条记录进行对比。</div>
+          ) : (
+            <div className="mt-3 grid gap-2">
+              <div className="text-xs text-subtext">
+                A：{compareRuns[0]?.type} · {new Date(compareRuns[0]?.created_at ?? "").toLocaleString()}
+              </div>
+              <div className="text-xs text-subtext">
+                B：{compareRuns[1]?.type} · {new Date(compareRuns[1]?.created_at ?? "").toLocaleString()}
+              </div>
+              <pre className="max-h-[60vh] overflow-auto rounded-atelier border border-border bg-canvas p-3 text-xs text-ink">
+                {compareDiff || "（无差异）"}
+              </pre>
+              <div className="text-[11px] text-subtext">提示：- 表示删除行，+ 表示新增行。</div>
+            </div>
+          )}
         </div>
       </div>
     </Drawer>

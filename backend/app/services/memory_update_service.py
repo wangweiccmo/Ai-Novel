@@ -31,6 +31,7 @@ from app.models.structured_memory import (
 )
 from app.schemas.memory_update import AFTER_MODEL_BY_TABLE, MemoryUpdateV1Request
 from app.services.table_executor import TableUpdateV1Request, is_key_value_schema, validate_row_data_for_table
+from app.services.memory_conflict_service import detect_memory_update_conflicts
 from app.services.fractal_memory_service import rebuild_fractal_memory
 from app.services.vector_embedding_overrides import vector_embedding_overrides
 from app.services.vector_rag_service import build_project_chunks, rebuild_project, vector_rag_status
@@ -482,6 +483,7 @@ def propose_chapter_memory_change_set(
             "idempotent": True,
             "change_set": _change_set_to_dict(existing),
             "items": [_item_to_dict(i) for i in items],
+            "conflicts": [],
         }
 
     generation_run_id = new_id()
@@ -524,6 +526,7 @@ def propose_chapter_memory_change_set(
     db.add(change_set)
 
     items: list[MemoryChangeSetItem] = []
+    proposed_items: list[dict[str, Any]] = []
     for idx, op in enumerate(payload.ops):
         target_table = str(op.target_table)
         target_id = str(op.target_id or "").strip()
@@ -604,6 +607,21 @@ def propose_chapter_memory_change_set(
         )
         items.append(item)
         db.add(item)
+        proposed_items.append(
+            {
+                "item_index": idx,
+                "op": str(op.op),
+                "target_table": target_table,
+                "target_id": target_id,
+                "after": dict(after_dict) if after_dict is not None else None,
+            }
+        )
+
+    conflicts: list[dict[str, Any]] = []
+    try:
+        conflicts = detect_memory_update_conflicts(db=db, project_id=project_id, items=proposed_items)
+    except Exception:
+        conflicts = []
 
     try:
         db.commit()
@@ -641,6 +659,7 @@ def propose_chapter_memory_change_set(
                 "idempotent": True,
                 "change_set": _change_set_to_dict(existing),
                 "items": [_item_to_dict(i) for i in items2],
+                "conflicts": [],
             }
         raise
 
@@ -656,6 +675,7 @@ def propose_chapter_memory_change_set(
         "idempotent": False,
         "change_set": _change_set_to_dict(change_set),
         "items": [_item_to_dict(i) for i in items],
+        "conflicts": conflicts,
     }
 
 
