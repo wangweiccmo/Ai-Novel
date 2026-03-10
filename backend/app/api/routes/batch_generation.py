@@ -4,6 +4,7 @@ import json
 
 from fastapi import APIRouter, Request
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import DbDep, UserIdDep, require_chapter_editor, require_project_editor, require_project_viewer
 from app.core.config import settings
@@ -173,8 +174,8 @@ def create_batch_generation_task(
         outline_id = ensure_active_outline(db, project=project).id
         start_number = 1
 
-    limit = max(int(body.count) * 5, int(body.count))
-    candidates = (
+    requested_count = int(body.count)
+    existing_rows = (
         db.execute(
             select(Chapter)
             .where(
@@ -183,30 +184,36 @@ def create_batch_generation_task(
                 Chapter.number >= start_number,
             )
             .order_by(Chapter.number.asc())
-            .limit(limit)
         )
         .scalars()
         .all()
     )
+    existing_by_number = {int(ch.number): ch for ch in existing_rows}
 
     def _is_empty(ch: Chapter) -> bool:
         return not ((ch.content_md or "").strip() or (ch.summary or "").strip())
 
     selected: list[Chapter] = []
-    for ch in candidates:
-        if not body.include_existing and not _is_empty(ch):
-            continue
-        selected.append(ch)
-        if len(selected) >= int(body.count):
-            break
-
-    if not selected:
-        raise AppError.validation(message="没有可生成的章节（请先创建章节，或开启 include_existing）")
-    if len(selected) < int(body.count):
-        raise AppError.validation(
-            message=f"目标章节不足：仅找到 {len(selected)} 章可生成，请减少数量或开启 include_existing",
-            details={"found": len(selected), "required": int(body.count)},
-        )
+    current_number = start_number
+    while len(selected) < requested_count:
+        ch = existing_by_number.get(int(current_number))
+        if ch is None:
+            ch = Chapter(
+                id=new_id(),
+                project_id=project_id,
+                outline_id=outline_id,
+                number=int(current_number),
+                title=None,
+                plan=None,
+                status="planned",
+            )
+            db.add(ch)
+            existing_by_number[int(current_number)] = ch
+            selected.append(ch)
+        else:
+            if body.include_existing or _is_empty(ch):
+                selected.append(ch)
+        current_number += 1
 
     if body.context.require_sequential:
         selected_numbers = {int(ch.number) for ch in selected}
@@ -273,7 +280,11 @@ def create_batch_generation_task(
         chapter_numbers=[int(ch.number) for ch in selected],
         request_id=request_id,
     )
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise AppError.conflict(message="章节号已存在，请刷新后重试", details={"reason": "chapter_number_conflict"})
 
     try:
         get_task_queue().enqueue_batch_generation_task(task_id)

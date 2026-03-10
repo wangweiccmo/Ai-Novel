@@ -27,10 +27,11 @@ export function useBatchGeneration(args: {
   preset: LLMPreset | null;
   activeChapter: Chapter | null;
   chapters: ChapterListItem[];
+  refreshChapters?: () => Promise<ChapterListItem[]>;
   genForm: GenerateForm;
   searchParams: URLSearchParams;
   setSearchParams: SetURLSearchParams;
-  requestSelectChapter: (chapterId: string) => Promise<void>;
+  requestSelectChapter: (chapterId: string) => Promise<boolean>;
   toast: {
     toastError: (message: string, requestId?: string, action?: { label: string; onClick: () => void }) => void;
     toastSuccess: (message: string, requestId?: string) => void;
@@ -41,6 +42,7 @@ export function useBatchGeneration(args: {
     preset,
     activeChapter,
     chapters,
+    refreshChapters,
     genForm,
     searchParams,
     setSearchParams,
@@ -55,11 +57,14 @@ export function useBatchGeneration(args: {
   const [batchTask, setBatchTask] = useState<BatchGenerationTask | null>(null);
   const [batchItems, setBatchItems] = useState<BatchGenerationTaskItem[]>([]);
   const [batchRuntime, setBatchRuntime] = useState<ProjectTaskRuntime | null>(null);
+  const applyRunId = searchParams.get("applyRunId");
+  const [batchApplying, setBatchApplying] = useState(false);
 
   const batchTaskRef = useRef<BatchGenerationTask | null>(null);
   const batchRefreshGuardRef = useRef(createRequestSeqGuard());
   const runtimeRefreshGuardRef = useRef(createRequestSeqGuard());
   const batchSyncTimerRef = useRef<number | null>(null);
+  const batchApplyQueueRef = useRef<BatchGenerationTaskItem[]>([]);
 
   useEffect(() => {
     batchTaskRef.current = batchTask;
@@ -140,6 +145,8 @@ export function useBatchGeneration(args: {
   );
 
   useEffect(() => {
+    batchApplyQueueRef.current = [];
+    setBatchApplying(false);
     if (!projectId) {
       batchRefreshGuardRef.current.invalidate();
       runtimeRefreshGuardRef.current.invalidate();
@@ -208,7 +215,7 @@ export function useBatchGeneration(args: {
   const startBatchGeneration = useCallback(async () => {
     if (!projectId) return;
     if (!preset) {
-      toast.toastError("Please save an LLM preset on the Prompts page first.");
+      toast.toastError("请先在 Prompts 页面保存 LLM 配置。");
       return;
     }
     setBatchLoading(true);
@@ -235,7 +242,7 @@ export function useBatchGeneration(args: {
           include_constraints: genForm.context.include_constraints,
           include_outline: genForm.context.include_outline,
           include_smart_context: genForm.context.include_smart_context,
-          require_sequential: true,
+          require_sequential: genForm.context.require_sequential,
           character_ids: genForm.context.character_ids,
           previous_chapter: genForm.context.previous_chapter === "none" ? null : genForm.context.previous_chapter,
         },
@@ -251,7 +258,12 @@ export function useBatchGeneration(args: {
       if (res.data.task.project_task_id) {
         void refreshBatchRuntime(res.data.task.project_task_id, { silent: true });
       }
-      toast.toastSuccess("Batch generation started.", res.request_id);
+      try {
+        await refreshChapters?.();
+      } catch {
+        // Ignore refresh failures; meta list handles its own error reporting.
+      }
+      toast.toastSuccess("批量生成已启动。", res.request_id);
     } catch (e) {
       const err = e as ApiError;
       const missingNumbers = extractMissingNumbers(err);
@@ -259,11 +271,11 @@ export function useBatchGeneration(args: {
         const targetNumber = missingNumbers[0]!;
         const target = chapters.find((chapter) => chapter.number === targetNumber);
         toast.toastError(
-          `Missing prerequisite chapter content: ${missingNumbers.join(", ")}.`,
+          `缺少前置章节内容：第 ${missingNumbers.join("、")} 章。`,
           err.requestId,
           target
             ? {
-                label: `Open chapter ${targetNumber}`,
+                label: `打开第 ${targetNumber} 章`,
                 onClick: () => void requestSelectChapter(target.id),
               }
             : undefined,
@@ -282,6 +294,7 @@ export function useBatchGeneration(args: {
     genForm,
     preset,
     projectId,
+    refreshChapters,
     refreshBatchRuntime,
     requestSelectChapter,
     toast,
@@ -292,7 +305,7 @@ export function useBatchGeneration(args: {
     setBatchLoading(true);
     try {
       await cancelBatchGenerationTask(batchTask.id);
-      toast.toastSuccess("Batch generation canceled.");
+      toast.toastSuccess("批量生成已取消。");
       await refreshBatchTask({ silent: true });
     } catch (e) {
       const err = e as ApiError;
@@ -307,7 +320,7 @@ export function useBatchGeneration(args: {
     setBatchLoading(true);
     try {
       await pauseBatchGenerationTask(batchTask.id);
-      toast.toastSuccess("Batch generation paused.");
+      toast.toastSuccess("批量生成已暂停。");
       await refreshBatchTask({ silent: true });
     } catch (e) {
       const err = e as ApiError;
@@ -322,7 +335,7 @@ export function useBatchGeneration(args: {
     setBatchLoading(true);
     try {
       await resumeBatchGenerationTask(batchTask.id);
-      toast.toastSuccess("Batch generation resumed.");
+      toast.toastSuccess("批量生成已继续。");
       await refreshBatchTask({ silent: true });
     } catch (e) {
       const err = e as ApiError;
@@ -337,7 +350,7 @@ export function useBatchGeneration(args: {
     setBatchLoading(true);
     try {
       await retryFailedBatchGenerationTask(batchTask.id);
-      toast.toastSuccess("Failed chapters queued for retry.");
+      toast.toastSuccess("失败章节已加入重试队列。");
       await refreshBatchTask({ silent: true });
     } catch (e) {
       const err = e as ApiError;
@@ -352,7 +365,7 @@ export function useBatchGeneration(args: {
     setBatchLoading(true);
     try {
       await skipFailedBatchGenerationTask(batchTask.id);
-      toast.toastSuccess("Failed chapters skipped.");
+      toast.toastSuccess("失败章节已跳过。");
       await refreshBatchTask({ silent: true });
     } catch (e) {
       const err = e as ApiError;
@@ -362,16 +375,72 @@ export function useBatchGeneration(args: {
     }
   }, [batchTask, refreshBatchTask, toast]);
 
+  const buildApplyQueue = useCallback(
+    () =>
+      [...batchItems]
+        .filter((item) => item.status === "succeeded" && item.chapter_id && item.generation_run_id)
+        .sort((a, b) => a.chapter_number - b.chapter_number),
+    [batchItems],
+  );
+
+  const startNextBatchApply = useCallback(async () => {
+    if (applyRunId) return;
+    const queue = batchApplyQueueRef.current;
+    while (queue.length > 0) {
+      const next = queue.shift();
+      if (!next || !next.chapter_id || !next.generation_run_id) continue;
+      const ok = await requestSelectChapter(next.chapter_id);
+      if (!ok) {
+        batchApplyQueueRef.current = [];
+        setBatchApplying(false);
+        return;
+      }
+      const params = new URLSearchParams(searchParams);
+      params.set("applyRunId", next.generation_run_id);
+      setSearchParams(params, { replace: true });
+      return;
+    }
+    setBatchApplying(false);
+  }, [applyRunId, requestSelectChapter, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (!batchApplying) return;
+    if (applyRunId) return;
+    void startNextBatchApply();
+  }, [applyRunId, batchApplying, startNextBatchApply]);
+
+  const applyAllToEditor = useCallback(async () => {
+    if (batchApplying) return;
+    if (applyRunId) {
+      toast.toastError("已有正在应用的生成结果，请稍后再试。");
+      return;
+    }
+    const queue = buildApplyQueue();
+    if (queue.length === 0) {
+      toast.toastError("暂无可应用的批量结果。");
+      return;
+    }
+    batchApplyQueueRef.current = queue;
+    setBatchApplying(true);
+    setOpen(false);
+  }, [applyRunId, batchApplying, buildApplyQueue, toast]);
+
   const applyBatchItemToEditor = useCallback(
     async (item: BatchGenerationTaskItem) => {
+      if (batchApplying) return;
+      if (applyRunId) {
+        toast.toastError("宸叉湁姝ｅ湪搴旂敤鐨勭敓鎴愮粨鏋滐紝璇风◢鍚庡啀璇曘€?");
+        return;
+      }
       if (!item.chapter_id || !item.generation_run_id) return;
       setOpen(false);
-      await requestSelectChapter(item.chapter_id);
+      const ok = await requestSelectChapter(item.chapter_id);
+      if (!ok) return;
       const next = new URLSearchParams(searchParams);
       next.set("applyRunId", item.generation_run_id);
       setSearchParams(next, { replace: true });
     },
-    [requestSelectChapter, searchParams, setSearchParams],
+    [applyRunId, batchApplying, requestSelectChapter, searchParams, setSearchParams, toast],
   );
 
   return {
@@ -386,6 +455,7 @@ export function useBatchGeneration(args: {
     batchTask,
     batchItems,
     batchRuntime,
+    batchApplying,
     projectTaskStreamStatus: projectTaskEvents.status,
     refreshBatchTask,
     startBatchGeneration,
@@ -396,5 +466,6 @@ export function useBatchGeneration(args: {
     skipFailedBatchGeneration,
     hasFailedBatchItems: hasFailedBatchGenerationItems(batchItems),
     applyBatchItemToEditor,
+    applyAllToEditor,
   };
 }

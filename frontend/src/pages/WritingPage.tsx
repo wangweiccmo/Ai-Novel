@@ -175,7 +175,7 @@ export function WritingPage() {
   const requestSelectChapter = useCallback(
     async (id: string) => {
       autoGenerateNextRef.current = null;
-      await requestSelectChapterBase(id);
+      return await requestSelectChapterBase(id);
     },
     [requestSelectChapterBase],
   );
@@ -224,6 +224,7 @@ export function WritingPage() {
     preset,
     activeChapter,
     chapters,
+    refreshChapters,
     genForm,
     searchParams,
     setSearchParams,
@@ -624,6 +625,8 @@ export function WritingPage() {
         onSkipFailedTask={() => void batch.skipFailedBatchGeneration()}
         onStartTask={() => void batch.startBatchGeneration()}
         onApplyItemToEditor={(it) => void batch.applyBatchItemToEditor(it)}
+        batchApplying={batch.batchApplying}
+        onApplyAllToEditor={() => void batch.applyAllToEditor()}
       />
 
       <ChapterAnalysisModal

@@ -107,7 +107,7 @@ export function useChapterGeneration(args: {
   preset: LLMPreset | null;
   dirty: boolean;
   saveChapter: () => Promise<boolean>;
-  requestSelectChapter: (chapterId: string) => Promise<void>;
+  requestSelectChapter: (chapterId: string) => Promise<boolean>;
   toast: ToastApi;
   confirm: ConfirmApi;
 }) {

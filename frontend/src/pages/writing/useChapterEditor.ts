@@ -267,8 +267,8 @@ export function useChapterEditor(args: {
   });
 
   const requestSelectChapter = useCallback(
-    async (id: string) => {
-      if (id === activeId) return;
+    async (id: string): Promise<boolean> => {
+      if (id === activeId) return true;
       if (dirty) {
         const choice = await confirm.choose({
           title: "章节有未保存修改，是否切换？",
@@ -277,13 +277,14 @@ export function useChapterEditor(args: {
           secondaryText: "不保存切换",
           cancelText: "取消",
         });
-        if (choice === "cancel") return;
+        if (choice === "cancel") return false;
         if (choice === "confirm") {
           const ok = await saveChapter();
-          if (!ok) return;
+          if (!ok) return false;
         }
       }
       setActiveId(id);
+      return true;
     },
     [activeId, confirm, dirty, saveChapter],
   );

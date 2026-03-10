@@ -14,7 +14,7 @@ export function useChapterCrud(args: {
   chapters: ChapterListItem[];
   activeChapter: Chapter | null;
   setActiveId: (next: string | null) => void;
-  requestSelectChapter: (chapterId: string) => Promise<void>;
+  requestSelectChapter: (chapterId: string) => Promise<boolean>;
   toast: ToastApi;
   confirm: ConfirmApi;
   bumpWizardLocal: () => void;

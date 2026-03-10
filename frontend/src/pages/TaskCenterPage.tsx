@@ -513,24 +513,24 @@ export function TaskCenterPage() {
       if (!batchTaskId) return;
       const projectTaskId = selected.item.id;
       setProjectTaskBatchActionLoading(true);
-      try {
-        if (action === "pause") {
-          await pauseBatchGenerationTask(batchTaskId);
-          toast.toastSuccess("Batch paused.");
-        } else if (action === "resume") {
-          await resumeBatchGenerationTask(batchTaskId);
-          toast.toastSuccess("Batch resumed.");
-        } else if (action === "retry_failed") {
-          await retryFailedBatchGenerationTask(batchTaskId);
-          toast.toastSuccess("Failed chapters queued for retry.");
-        } else if (action === "skip_failed") {
-          await skipFailedBatchGenerationTask(batchTaskId);
-          toast.toastSuccess("Failed chapters skipped.");
-        } else {
-          if (!window.confirm("Cancel this batch task?")) return;
-          await cancelBatchGenerationTask(batchTaskId);
-          toast.toastSuccess("Batch canceled.");
-        }
+        try {
+          if (action === "pause") {
+            await pauseBatchGenerationTask(batchTaskId);
+            toast.toastSuccess("批量已暂停。");
+          } else if (action === "resume") {
+            await resumeBatchGenerationTask(batchTaskId);
+            toast.toastSuccess("批量已继续。");
+          } else if (action === "retry_failed") {
+            await retryFailedBatchGenerationTask(batchTaskId);
+            toast.toastSuccess("失败章节已加入重试队列。");
+          } else if (action === "skip_failed") {
+            await skipFailedBatchGenerationTask(batchTaskId);
+            toast.toastSuccess("失败章节已跳过。");
+          } else {
+            if (!window.confirm("确定取消该批量任务吗？")) return;
+            await cancelBatchGenerationTask(batchTaskId);
+            toast.toastSuccess("批量已取消。");
+          }
         await refreshProjectTasks();
         await Promise.all([
           refreshSelectedProjectTask(projectTaskId, { silent: true }),
