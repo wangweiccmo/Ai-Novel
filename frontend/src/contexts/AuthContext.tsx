@@ -1,7 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiError, apiJson } from "../services/apiClient";
-import { DEFAULT_USER_ID, clearCurrentUserId, setCurrentUserId } from "../services/currentUser";
+import {
+  DEFAULT_USER_ID,
+  clearAuthSessionHint,
+  clearCurrentUserId,
+  hasAuthSessionHint,
+  setAuthSessionHint,
+  setCurrentUserId,
+} from "../services/currentUser";
 import { AuthContext, computeNextAuthRefreshDelayMs, type AuthSession, type AuthState, type AuthUser } from "./auth";
 
 type AuthUserApi = { id: string; display_name: string; is_admin: boolean };
@@ -35,36 +42,61 @@ export function AuthProvider(props: { children: React.ReactNode }) {
     sessionExpireAtRef.current = state.status === "authenticated" ? (state.session?.expireAt ?? null) : null;
   }, [state.session?.expireAt, state.status]);
 
-  const refresh = useCallback(async ({ silent }: { silent?: boolean } = {}) => {
-    if (!silent) setState((s) => ({ ...s, status: "loading" }));
-    try {
-      const res = await apiJson<{ user: AuthUserApi; session: { expire_at: number } | null }>("/api/auth/user", {
-        timeoutMs: 15_000,
-      });
-      const user = mapUser(res.data.user);
-      setCurrentUserId(user.id);
-      setState({ status: "authenticated", user, session: { expireAt: res.data.session?.expire_at ?? null } });
-      return;
-    } catch (e) {
-      const err = e instanceof ApiError ? e : null;
-      if (err?.status === 401) {
-        if (!devFallbackEnabled()) {
-          setState({ status: "unauthenticated", user: null, session: null });
-          return;
-        }
+  const refresh = useCallback(
+    async ({ silent, allowAuthProbe = true }: { silent?: boolean; allowAuthProbe?: boolean } = {}) => {
+      const setUnauthenticated = () => setState({ status: "unauthenticated", user: null, session: null });
+      const tryDevFallback = async () => {
+        if (!devFallbackEnabled()) return false;
         try {
           await apiJson<{ projects: unknown[] }>("/api/projects", { timeoutMs: 15_000 });
           setCurrentUserId(DEFAULT_USER_ID);
           setState({ status: "dev_fallback", user: fallbackUser(), session: null });
-          return;
+          return true;
         } catch {
-          setState({ status: "unauthenticated", user: null, session: null });
+          return false;
+        }
+      };
+
+      if (!silent) setState((s) => ({ ...s, status: "loading" }));
+      if (allowAuthProbe) {
+        try {
+          const res = await apiJson<{ user: AuthUserApi; session: { expire_at: number } | null }>("/api/auth/user", {
+            timeoutMs: 15_000,
+          });
+          const user = mapUser(res.data.user);
+          setCurrentUserId(user.id);
+          setAuthSessionHint();
+          setState({ status: "authenticated", user, session: { expireAt: res.data.session?.expire_at ?? null } });
+          return;
+        } catch (e) {
+          const err = e instanceof ApiError ? e : null;
+          if (err?.status === 401) {
+            clearAuthSessionHint();
+            const fallbackOk = await tryDevFallback();
+            if (fallbackOk) return;
+            setUnauthenticated();
+            return;
+          }
+          setUnauthenticated();
           return;
         }
       }
-      setState({ status: "unauthenticated", user: null, session: null });
-    }
-  }, []);
+
+      const fallbackOk = await tryDevFallback();
+      if (fallbackOk) return;
+      setUnauthenticated();
+    },
+    [
+      apiJson,
+      clearAuthSessionHint,
+      DEFAULT_USER_ID,
+      devFallbackEnabled,
+      fallbackUser,
+      mapUser,
+      setAuthSessionHint,
+      setCurrentUserId,
+    ],
+  );
 
   const refreshSession = useCallback(async () => {
     try {
@@ -81,9 +113,12 @@ export function AuthProvider(props: { children: React.ReactNode }) {
       });
     } catch (e) {
       const err = e instanceof ApiError ? e : null;
-      if (err?.status === 401) setState({ status: "unauthenticated", user: null, session: null });
+      if (err?.status === 401) {
+        clearAuthSessionHint();
+        setState({ status: "unauthenticated", user: null, session: null });
+      }
     }
-  }, []);
+  }, [apiJson, clearAuthSessionHint]);
 
   const login = useCallback(async ({ userId, password }: { userId: string; password: string }) => {
     const res = await apiJson<{ user: AuthUserApi; session: { expire_at: number } | null }>("/api/auth/local/login", {
@@ -92,8 +127,9 @@ export function AuthProvider(props: { children: React.ReactNode }) {
     });
     const user = mapUser(res.data.user);
     setCurrentUserId(user.id);
+    setAuthSessionHint();
     setState({ status: "authenticated", user, session: { expireAt: res.data.session?.expire_at ?? null } });
-  }, []);
+  }, [apiJson, mapUser, setAuthSessionHint, setCurrentUserId]);
 
   const register = useCallback(
     async ({
@@ -121,9 +157,10 @@ export function AuthProvider(props: { children: React.ReactNode }) {
       );
       const user = mapUser(res.data.user);
       setCurrentUserId(user.id);
+      setAuthSessionHint();
       setState({ status: "authenticated", user, session: { expireAt: res.data.session?.expire_at ?? null } });
     },
-    [],
+    [apiJson, mapUser, setAuthSessionHint, setCurrentUserId],
   );
 
   const logout = useCallback(async () => {
@@ -133,23 +170,32 @@ export function AuthProvider(props: { children: React.ReactNode }) {
       // ignore
     } finally {
       clearCurrentUserId();
-      await refresh({ silent: true });
+      clearAuthSessionHint();
+      setState({ status: "unauthenticated", user: null, session: null });
     }
-  }, [refresh]);
+  }, [apiJson, clearAuthSessionHint, clearCurrentUserId]);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    if (typeof window === "undefined") {
+      void refresh();
+      return;
+    }
+    const pathname = window.location.pathname;
+    const isAuthPage = pathname === "/login" || pathname === "/register";
+    const allowAuthProbe = !isAuthPage || hasAuthSessionHint();
+    void refresh({ silent: true, allowAuthProbe });
+  }, [hasAuthSessionHint, refresh]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const onUnauthorized = () => {
       if (statusRef.current !== "authenticated") return;
+      clearAuthSessionHint();
       setState({ status: "unauthenticated", user: null, session: null });
     };
     window.addEventListener("ainovel:unauthorized", onUnauthorized);
     return () => window.removeEventListener("ainovel:unauthorized", onUnauthorized);
-  }, []);
+  }, [clearAuthSessionHint]);
 
   useEffect(() => {
     if (state.status !== "authenticated") return undefined;

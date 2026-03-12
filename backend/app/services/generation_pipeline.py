@@ -147,7 +147,9 @@ def run_post_edit_step(
                     import json as _json
                     _words = _json.loads(_custom_words_raw)
                     if isinstance(_words, list) and _words:
-                        post_values["custom_ai_trace_words"] = [str(w).strip() for w in _words if str(w).strip()]
+                        cleaned = [str(w).strip() for w in _words if str(w).strip()]
+                        if cleaned:
+                            post_values["custom_ai_trace_words"] = "\n".join(f"- {w}" for w in cleaned)
                 except Exception:
                     pass
 

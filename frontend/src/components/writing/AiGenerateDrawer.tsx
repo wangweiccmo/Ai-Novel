@@ -408,8 +408,8 @@ export function AiGenerateDrawer(props: Props) {
                     }}
                   />
                 </label>
-                <div className=”mt-1 text-[11px] text-subtext”>
-                  {“留空将自动使用「用户指令 + 章节计划」。查询预处理（标签提取、排除规则）在项目设置中配置，可在上下文预览中查看效果。”}
+                <div className="mt-1 text-[11px] text-subtext">
+                  留空将自动使用「用户指令 + 章节计划」。查询预处理（标签提取、排除规则）在项目设置中配置，可在上下文预览中查看效果。
                 </div>
 
                 <div className="mt-3 grid gap-2">

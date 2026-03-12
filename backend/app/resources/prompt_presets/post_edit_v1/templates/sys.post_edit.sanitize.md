@@ -6,10 +6,7 @@
 {% if custom_ai_trace_words %}
 
 以下是作者标记的需要特别注意清除的”AI痕迹”词汇/短语：
-{% for word in custom_ai_trace_words %}
-- {{ word }}
-{% endfor %}
+{{ custom_ai_trace_words }}
 遇到上述词汇或类似表达时，替换为更自然、符合上下文的措辞。
 {% endif %}
 {% endif %}
-

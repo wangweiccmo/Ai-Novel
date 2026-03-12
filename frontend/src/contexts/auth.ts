@@ -51,7 +51,7 @@ export function computeNextAuthRefreshDelayMs({
 }
 
 export type AuthApi = AuthState & {
-  refresh: (opts?: { silent?: boolean }) => Promise<void>;
+  refresh: (opts?: { silent?: boolean; allowAuthProbe?: boolean }) => Promise<void>;
   login: (args: { userId: string; password: string }) => Promise<void>;
   register: (args: { userId: string; password: string; displayName?: string; email?: string }) => Promise<void>;
   logout: () => Promise<void>;

@@ -3,9 +3,7 @@
 
 以下是系统检测到的潜在逻辑矛盾或连续性问题，请在生成时**务必注意避免或修正**：
 
-{% for warning in continuity_warnings %}
-- **[{{ warning.category }}]** {{ warning.message }}
-{% endfor %}
+{{ continuity_warnings }}
 
 > 以上警告由系统自动检测，可能存在误报。若确认为有意的剧情设计（如不可靠叙述者、角色伪装等），可忽略对应条目。
 {% endif %}

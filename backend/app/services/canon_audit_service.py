@@ -261,6 +261,16 @@ def _check_missing_characters(
     return warnings
 
 
-def format_warnings_for_render(warnings: list[ContinuityWarning]) -> list[dict[str, str]]:
-    """Convert warnings to dicts suitable for Jinja2 template rendering."""
-    return [{"category": w.category, "message": w.message, "severity": w.severity} for w in warnings]
+def format_warnings_for_render(warnings: list[ContinuityWarning]) -> str:
+    """Format warnings as markdown bullet lines for the safe template renderer."""
+    lines: list[str] = []
+    for w in warnings:
+        category = str(w.category or "").strip()
+        message = str(w.message or "").strip()
+        if not message:
+            continue
+        if category:
+            lines.append(f"- **[{category}]** {message}")
+        else:
+            lines.append(f"- {message}")
+    return "\n".join(lines).strip()
