@@ -17,6 +17,7 @@ class WritingStyle(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     prompt_content: Mapped[str] = mapped_column(Text, nullable=False)
+    scene_overrides_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_preset: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)

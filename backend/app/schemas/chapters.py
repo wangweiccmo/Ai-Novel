@@ -65,6 +65,8 @@ class ChapterListItemOut(ORMModel):
     has_plan: bool
     has_summary: bool
     has_content: bool
+    word_count: int = 0
+    generation_count: int = 0
 
 
 class ChapterMetaPageOut(BaseModel):

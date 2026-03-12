@@ -14,11 +14,24 @@ import {
 type ChapterVirtualListVariant = "panel" | "card";
 
 function renderTitle(variant: ChapterVirtualListVariant, chapter: ChapterListItem): ReactNode {
+  const wordCount = chapter.word_count ?? 0;
+  const genCount = chapter.generation_count ?? 0;
+
   if (variant === "panel") {
     return (
-      <div className="min-w-0 truncate">
-        <span className="mr-2 text-xs text-subtext">#{chapter.number}</span>
-        <span className="truncate">{chapter.title?.trim() ? chapter.title : "（未命名章节）"}</span>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="mr-1 text-xs text-subtext">#{chapter.number}</span>
+        <span className="min-w-0 truncate">{chapter.title?.trim() ? chapter.title : "（未命名章节）"}</span>
+        {wordCount > 0 && (
+          <span className="shrink-0 rounded bg-surface px-1 text-[10px] text-subtext" title="字数">
+            {wordCount >= 1000 ? `${(wordCount / 1000).toFixed(1)}k` : wordCount}
+          </span>
+        )}
+        {genCount > 0 && (
+          <span className="shrink-0 rounded bg-accent/10 px-1 text-[10px] text-accent" title="生成次数">
+            G{genCount}
+          </span>
+        )}
       </div>
     );
   }
@@ -26,6 +39,11 @@ function renderTitle(variant: ChapterVirtualListVariant, chapter: ChapterListIte
   return (
     <span className="min-w-0 truncate">
       {chapter.number}. {chapter.title?.trim() ? chapter.title : "（未命名）"}
+      {wordCount > 0 && (
+        <span className="ml-1 text-[10px] text-subtext">
+          {wordCount >= 1000 ? `${(wordCount / 1000).toFixed(1)}k` : wordCount}字
+        </span>
+      )}
     </span>
   );
 }

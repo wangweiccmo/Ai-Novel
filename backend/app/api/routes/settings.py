@@ -430,5 +430,8 @@ def put_settings(request: Request, db: DbDep, user_id: UserIdDep, project_id: st
 
     db.commit()
     db.refresh(row)
+    # Invalidate process-level cache for this project's settings
+    from app.services.memory_retrieval_service import invalidate_project_settings_cache
+    invalidate_project_settings_cache(project_id)
     payload = _build_settings_payload(project_id=project_id, row=row)
     return ok_payload(request_id=request_id, data={"settings": payload})

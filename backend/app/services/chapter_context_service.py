@@ -15,6 +15,7 @@ from app.schemas.chapter_analysis import ChapterAnalyzeRequest, ChapterRewriteRe
 from app.schemas.chapter_generate import ChapterGenerateContext, ChapterGenerateRequest
 from app.services.prompt_store import format_characters
 from app.services.style_resolution_service import resolve_style_guide
+from app.services.canon_audit_service import run_canon_audit, format_warnings_for_render
 
 PREVIOUS_CHAPTER_ENDING_CHARS = 1000
 CURRENT_DRAFT_TAIL_CHARS = 1200
@@ -89,26 +90,50 @@ def build_smart_context(
     recent_full = "\n\n".join(recent_full_parts).strip()
 
     total_prev = max(0, chapter_number - 1)
-    stride = (
-        SMART_CONTEXT_SKELETON_STRIDE_LARGE
-        if total_prev >= SMART_CONTEXT_SKELETON_LARGE_THRESHOLD
-        else SMART_CONTEXT_SKELETON_STRIDE_SMALL
-    )
-    skeleton_numbers = [n for n in range(1, chapter_number, stride)]
 
+    # Smart chapter selection: pick the most important chapters for the skeleton
+    # instead of fixed-stride. Uses summary richness + proximity as signals.
     skeleton = ""
-    if len(skeleton_numbers) >= 2:
-        skeleton_rows = db.execute(
-            select(Chapter.number, Chapter.title, Chapter.summary, Chapter.plan)
+    if total_prev >= 3:
+        skeleton_candidates = db.execute(
+            select(Chapter.number, Chapter.title, Chapter.summary, Chapter.plan, Chapter.content_md)
             .where(
                 Chapter.project_id == project_id,
                 Chapter.outline_id == outline_id,
-                Chapter.number.in_(skeleton_numbers),
+                Chapter.number < chapter_number,
             )
             .order_by(Chapter.number.asc())
         ).all()
+
+        max_skeleton = 8 if total_prev < SMART_CONTEXT_SKELETON_LARGE_THRESHOLD else 12
+
+        def _importance_score(row: tuple, current: int) -> float:
+            num, _title, summary, plan, content_md = row
+            # Proximity: closer chapters matter more
+            distance = max(1, current - int(num))
+            proximity = 1.0 / (1.0 + distance * 0.05)
+            # Content richness: longer summary = more happened
+            summary_len = len((summary or "").strip())
+            plan_len = len((plan or "").strip())
+            content_len = len((content_md or "").strip())
+            richness = min(1.0, (summary_len / 300.0) * 0.5 + (plan_len / 200.0) * 0.2 + (content_len / 3000.0) * 0.3)
+            # Key chapter positions: first, midpoint, chapter before current always included
+            position_bonus = 0.0
+            if int(num) == 1:
+                position_bonus = 0.3  # First chapter always important
+            elif int(num) == current - 1:
+                position_bonus = 0.5  # Immediately preceding chapter
+            elif total_prev > 10 and int(num) == total_prev // 2:
+                position_bonus = 0.2  # Midpoint
+            return proximity * 0.4 + richness * 0.3 + position_bonus
+
+        scored = [(row, _importance_score(row, chapter_number)) for row in skeleton_candidates]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        selected = [row for row, _ in scored[:max_skeleton]]
+        selected.sort(key=lambda row: row[0])  # Re-sort by chapter number
+
         skeleton_lines: list[str] = []
-        for num, title, summary, plan in skeleton_rows:
+        for num, title, summary, plan, _content_md in selected:
             text = (summary or "").strip() or (plan or "").strip()
             if not text:
                 continue
@@ -175,7 +200,8 @@ def _load_project_story_text_context(
     project_id: str,
     outline_id: str,
     ctx: ChapterGenerateContext,
-) -> tuple[str, str, str, str, str]:
+) -> tuple[str, str, str, str, str, str]:
+    """Returns (world_setting, style_guide, constraints, outline_text, characters_text, arc_phase)."""
     settings_row = db.get(ProjectSettings, project_id)
     outline_row = db.get(Outline, outline_id)
 
@@ -194,6 +220,8 @@ def _load_project_story_text_context(
     if not ctx.include_outline:
         outline_text = ""
 
+    arc_phase = (getattr(outline_row, "arc_phase", None) or "") if outline_row else ""
+
     chars: list[Character] = []
     if ctx.character_ids:
         chars = (
@@ -208,7 +236,7 @@ def _load_project_story_text_context(
         )
     characters_text = format_characters(chars)
 
-    return world_setting, style_guide, constraints, outline_text, characters_text
+    return world_setting, style_guide, constraints, outline_text, characters_text, arc_phase
 
 
 def _format_chapter_generate_instruction(*, mode: Literal["replace", "append"], base_instruction: str) -> str:
@@ -303,7 +331,7 @@ def build_chapter_generate_render_values(
     body: ChapterGenerateRequest,
     user_id: str,
 ) -> tuple[dict[str, object], str, dict[str, object], dict[str, object]]:
-    world_setting, style_guide, constraints, outline_text, characters_text = _load_project_story_text_context(
+    world_setting, style_guide, constraints, outline_text, characters_text, arc_phase = _load_project_story_text_context(
         db,
         project_id=chapter.project_id,
         outline_id=chapter.outline_id,
@@ -365,6 +393,21 @@ def build_chapter_generate_render_values(
         smart_context_story_skeleton=smart_story_skeleton,
     )
 
+    # Inject arc_phase for the arc_phase prompt block
+    if arc_phase:
+        values["arc_phase"] = arc_phase
+
+    # Run canon audit for continuity warnings
+    canon_warnings = run_canon_audit(
+        db,
+        project_id=chapter.project_id,
+        chapter_number=int(chapter.number),
+        chapter_plan=(chapter.plan or ""),
+        character_ids=body.context.character_ids if body.context.character_ids else None,
+    )
+    if canon_warnings:
+        values["continuity_warnings"] = format_warnings_for_render(canon_warnings)
+
     return values, base_instruction, requirements_obj, style_resolution
 
 
@@ -375,7 +418,7 @@ def build_chapter_analyze_render_values(
     chapter: Chapter,
     body: ChapterAnalyzeRequest,
 ) -> dict[str, object]:
-    world_setting, style_guide, constraints, outline_text, characters_text = _load_project_story_text_context(
+    world_setting, style_guide, constraints, outline_text, characters_text, _arc_phase = _load_project_story_text_context(
         db,
         project_id=chapter.project_id,
         outline_id=chapter.outline_id,
@@ -450,7 +493,7 @@ def build_chapter_rewrite_render_values(
     analysis_json: str,
     draft_content_md: str,
 ) -> dict[str, object]:
-    world_setting, style_guide, constraints, outline_text, characters_text = _load_project_story_text_context(
+    world_setting, style_guide, constraints, outline_text, characters_text, _arc_phase = _load_project_story_text_context(
         db,
         project_id=chapter.project_id,
         outline_id=chapter.outline_id,

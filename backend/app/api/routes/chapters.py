@@ -328,6 +328,7 @@ def _prepare_chapter_memory_injection(
             project_id=project_id,
             query_text=memory_query_text,
             section_enabled=memory_modules,
+            current_chapter_number=int(chapter.number),
         )
     except Exception:
         pack = None
@@ -501,7 +502,27 @@ def _chapter_query(*, project_id: str, outline_id: str):
     return select(Chapter).where(Chapter.project_id == project_id, Chapter.outline_id == outline_id)
 
 
-def _chapter_meta_payload(row: Chapter) -> dict:
+def _count_words(text: str | None) -> int:
+    """Count words/characters in content. For CJK text, counts characters."""
+    if not text:
+        return 0
+    content = text.strip()
+    if not content:
+        return 0
+    # Count CJK characters + non-CJK word tokens
+    count = 0
+    for ch in content:
+        code = ord(ch)
+        if (0x4E00 <= code <= 0x9FFF) or (0x3400 <= code <= 0x4DBF):
+            count += 1
+        elif ch in (' ', '\n', '\t', '\r'):
+            continue
+        # For non-CJK, we just count total non-space chars as approximation
+    # Simple approach: return character count minus whitespace for CJK-dominant text
+    return len(content.replace(' ', '').replace('\n', '').replace('\t', '').replace('\r', ''))
+
+
+def _chapter_meta_payload(row: Chapter, *, generation_count: int = 0) -> dict:
     return ChapterListItemOut(
         id=str(row.id),
         project_id=str(row.project_id),
@@ -513,6 +534,8 @@ def _chapter_meta_payload(row: Chapter) -> dict:
         has_plan=bool(str(row.plan or "").strip()),
         has_summary=bool(str(row.summary or "").strip()),
         has_content=bool(str(row.content_md or "").strip()),
+        word_count=_count_words(row.content_md),
+        generation_count=generation_count,
     ).model_dump()
 
 
@@ -542,8 +565,25 @@ def list_chapter_meta(
     has_more = len(rows) > limit
     page_rows = rows[:limit]
     next_cursor = page_rows[-1].number if has_more and page_rows else None
+
+    # Batch query generation counts for all chapters on this page
+    gen_counts: dict[str, int] = {}
+    if page_rows:
+        chapter_ids = [str(r.id) for r in page_rows]
+        gen_count_rows = db.execute(
+            select(GenerationRun.chapter_id, func.count(GenerationRun.id))
+            .where(GenerationRun.chapter_id.in_(chapter_ids))
+            .group_by(GenerationRun.chapter_id)
+        ).all()
+        gen_counts = {str(row[0]): int(row[1]) for row in gen_count_rows}
+
     data = ChapterMetaPageOut(
-        chapters=[ChapterListItemOut.model_validate(_chapter_meta_payload(row)).model_dump() for row in page_rows],
+        chapters=[
+            ChapterListItemOut.model_validate(
+                _chapter_meta_payload(row, generation_count=gen_counts.get(str(row.id), 0))
+            ).model_dump()
+            for row in page_rows
+        ],
         next_cursor=next_cursor,
         has_more=has_more,
         returned=len(page_rows),
@@ -1026,6 +1066,93 @@ def plan_chapter(
     if plan_step.finish_reason is not None:
         data["finish_reason"] = plan_step.finish_reason
     return ok_payload(request_id=request_id, data=data)
+
+
+@router.get("/chapters/{chapter_id}/context-estimate")
+def estimate_chapter_context(
+    request: Request,
+    chapter_id: str,
+    user_id: UserIdDep,
+    db: DbDep,
+) -> dict:
+    """
+    Lightweight endpoint to estimate context token usage for a chapter.
+    Used by the frontend to show token budget indicators before generation.
+    """
+    from app.services.prompt_budget import estimate_tokens
+
+    request_id = request.state.request_id
+    chapter = require_chapter_viewer(db, chapter_id=chapter_id, user_id=user_id)
+    project_id = str(chapter.project_id)
+
+    # Estimate tokens from key context sources
+    project_settings = db.get(ProjectSettings, project_id)
+    world_setting = str(getattr(project_settings, "world_setting", "") or "")
+    style_guide = str(getattr(project_settings, "style_guide", "") or "")
+    constraints = str(getattr(project_settings, "constraints", "") or "")
+
+    # Count previous chapter content
+    prev_chapter_tokens = 0
+    if chapter.number > 1:
+        prev = db.execute(
+            select(Chapter)
+            .where(
+                Chapter.project_id == project_id,
+                Chapter.outline_id == chapter.outline_id,
+                Chapter.number == chapter.number - 1,
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        if prev and prev.content_md:
+            prev_chapter_tokens = estimate_tokens(str(prev.content_md)[-CURRENT_DRAFT_TAIL_CHARS:])
+
+    # Get active outline
+    outline_tokens = 0
+    project = db.get(Project, project_id)
+    if project and project.active_outline_id:
+        outline = db.get(Outline, project.active_outline_id)
+        if outline and outline.content_md:
+            outline_tokens = estimate_tokens(str(outline.content_md))
+
+    # Count characters
+    characters = db.execute(
+        select(Character).where(Character.project_id == project_id)
+    ).scalars().all()
+    characters_tokens = sum(
+        estimate_tokens(str(c.profile or "") + str(c.notes or ""))
+        for c in characters
+    )
+
+    # Estimate memory sections (rough, without actual retrieval)
+    memory_estimate = 6000  # default estimate for all memory sections combined
+
+    total_context_tokens = (
+        estimate_tokens(world_setting)
+        + estimate_tokens(style_guide)
+        + estimate_tokens(constraints)
+        + prev_chapter_tokens
+        + outline_tokens
+        + characters_tokens
+        + memory_estimate
+        + 500  # system prompt overhead
+    )
+
+    return ok_payload(
+        request_id=request_id,
+        data={
+            "estimated_context_tokens": total_context_tokens,
+            "breakdown": {
+                "world_setting": estimate_tokens(world_setting),
+                "style_guide": estimate_tokens(style_guide),
+                "constraints": estimate_tokens(constraints),
+                "previous_chapter": prev_chapter_tokens,
+                "outline": outline_tokens,
+                "characters": characters_tokens,
+                "memory_sections": memory_estimate,
+                "system_overhead": 500,
+            },
+        },
+    )
 
 
 @router.post("/chapters/{chapter_id}/generate-precheck")

@@ -93,6 +93,69 @@ def _safe_json_loads_dict(raw: str | None) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+# ── Semantic role matching ────────────────────────────────────────
+# Maps generic role references (e.g. "主角", "反派") to actual character names.
+_ROLE_ALIAS_MAP_ZH: dict[str, set[str]] = {
+    "主角": {"主角", "protagonist", "main", "主要角色"},
+    "反派": {"反派", "antagonist", "villain", "boss", "大反派"},
+    "配角": {"配角", "supporting", "重要配角", "次要角色"},
+    "导师": {"导师", "mentor", "师父", "师傅", "老师"},
+    "情人": {"情人", "恋人", "love interest", "爱人"},
+    "盟友": {"盟友", "ally", "伙伴", "战友", "搭档"},
+}
+
+
+def _build_role_to_entity_index(entities: list[MemoryEntity]) -> dict[str, list[str]]:
+    """Build a mapping from generic role labels to entity names.
+
+    Scans entity attributes (entity_type, role, aliases) for matches against
+    known role synonyms, enabling queries like "主角" to resolve to "张三".
+    """
+    role_index: dict[str, list[str]] = {}
+    for e in entities:
+        name = str(e.name or "").strip()
+        if not name:
+            continue
+        attrs = _safe_json_loads_dict(e.attributes_json)
+        entity_type = str(attrs.get("entity_type") or attrs.get("type") or "").strip().lower()
+        role = str(attrs.get("role") or "").strip().lower()
+
+        labels = {entity_type, role}
+        for generic_role, synonyms in _ROLE_ALIAS_MAP_ZH.items():
+            if labels & synonyms:
+                role_index.setdefault(generic_role, []).append(name)
+
+    return role_index
+
+
+def _expand_query_with_role_aliases(
+    query_text: str,
+    role_index: dict[str, list[str]],
+) -> str:
+    """Expand generic role references in query text with actual character names.
+
+    E.g. if query mentions "主角", and role_index maps "主角" → ["张三"],
+    the function appends " 张三" to the query for better entity matching.
+    """
+    if not query_text or not role_index:
+        return query_text
+    q_lower = query_text.lower()
+    extras: list[str] = []
+    for role_label, names in role_index.items():
+        if role_label in q_lower:
+            extras.extend(names)
+    if not extras:
+        return query_text
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for n in extras:
+        if n not in seen:
+            seen.add(n)
+            unique.append(n)
+    return query_text + " " + " ".join(unique)
+
+
 def _extract_aliases(attrs: dict[str, Any]) -> list[str]:
     out: list[str] = []
     aliases = attrs.get("aliases")
@@ -351,6 +414,12 @@ def query_graph_context(
             query_text=effective_query_text,
             alias_candidates_limit=alias_candidates_limit,
         )
+
+        # Semantic role matching: expand generic role references (e.g. "主角")
+        # to actual character names using entity attributes.
+        role_index = _build_role_to_entity_index(candidates)
+        if role_index:
+            effective_query_text = _expand_query_with_role_aliases(effective_query_text, role_index)
 
         matched_pairs = _match_entities(entities=candidates, query_text=effective_query_text, max_matches=min(12, max_nodes))
         seed_ids = [eid for eid, _name in matched_pairs]

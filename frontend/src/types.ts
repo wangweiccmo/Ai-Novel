@@ -142,6 +142,8 @@ export interface ChapterListItem extends ChapterBase {
   has_plan: boolean;
   has_summary: boolean;
   has_content: boolean;
+  word_count?: number;
+  generation_count?: number;
 }
 
 export interface ChapterMetaPage {

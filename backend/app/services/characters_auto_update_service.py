@@ -49,6 +49,74 @@ CHARACTERS_AUTO_UPDATE_SCHEMA_VERSION: CharactersAutoUpdateSchemaVersion = "char
 
 _MAX_EXISTING_NAMES_IN_PROMPT = 200
 
+# Contradiction detection: pairs of semantically opposing traits
+_CONTRADICTION_PAIRS: list[tuple[str, str]] = [
+    ("温和", "暴躁"), ("善良", "邪恶"), ("年轻", "年迈"), ("年轻", "老年"),
+    ("高大", "矮小"), ("胆大", "胆小"), ("勇敢", "懦弱"), ("外向", "内向"),
+    ("乐观", "悲观"), ("冷酷", "热情"), ("沉默", "健谈"), ("忠诚", "背叛"),
+    ("温柔", "粗暴"), ("理性", "感性"), ("聪明", "愚笨"), ("自信", "自卑"),
+    ("kind", "cruel"), ("young", "old"), ("tall", "short"), ("brave", "cowardly"),
+    ("introverted", "extroverted"), ("optimistic", "pessimistic"),
+    ("gentle", "violent"), ("loyal", "treacherous"),
+]
+
+CHARACTER_PROFILE_COMPRESS_THRESHOLD = 10
+
+
+def _detect_profile_contradictions(
+    existing_profile: str,
+    new_profile: str,
+) -> list[dict[str, str]]:
+    """Detect contradicting trait descriptions between old and new profile text."""
+    if not existing_profile or not new_profile:
+        return []
+    old_lower = existing_profile.lower()
+    new_lower = new_profile.lower()
+    contradictions: list[dict[str, str]] = []
+    for trait_a, trait_b in _CONTRADICTION_PAIRS:
+        if (trait_a in old_lower and trait_b in new_lower) or (trait_b in old_lower and trait_a in new_lower):
+            contradictions.append({
+                "old_trait": trait_a if trait_a in old_lower else trait_b,
+                "new_trait": trait_b if trait_b in new_lower else trait_a,
+            })
+    return contradictions
+
+
+def _record_profile_version(
+    character: Character,
+    new_profile: str,
+    chapter_id: str | None = None,
+) -> None:
+    """Record a profile version snapshot before updating."""
+    old_profile = (getattr(character, "profile", None) or "").strip()
+    if not old_profile:
+        return
+
+    history: list[dict[str, Any]] = []
+    raw = getattr(character, "profile_history_json", None)
+    if raw:
+        try:
+            history = json.loads(raw)
+            if not isinstance(history, list):
+                history = []
+        except Exception:
+            history = []
+
+    version = int(getattr(character, "profile_version", 0) or 0)
+    history.append({
+        "version": version,
+        "profile": old_profile[:2000],
+        "chapter_id": chapter_id,
+        "timestamp": utc_now().isoformat(),
+    })
+
+    # Keep only last 20 versions to prevent unbounded growth
+    if len(history) > 20:
+        history = history[-20:]
+
+    character.profile_history_json = json.dumps(history, ensure_ascii=False)
+    character.profile_version = version + 1
+
 
 def _compact_json_dumps(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
@@ -182,6 +250,7 @@ def apply_characters_auto_update_ops(
     db: Session,
     project_id: str,
     ops: list[dict[str, Any]],
+    chapter_id: str | None = None,
 ) -> dict[str, Any]:
     pid = str(project_id or "").strip()
     if not pid:
@@ -204,6 +273,7 @@ def apply_characters_auto_update_ops(
     deduped = 0
     deleted = 0
     skipped: list[dict[str, Any]] = []
+    contradictions: list[dict[str, Any]] = []
 
     for idx, raw in enumerate(ops or []):
         try:
@@ -243,6 +313,22 @@ def apply_characters_auto_update_ops(
             role_new = (patch.role or "").strip()
             if role_new and not (str(getattr(row, "role", "") or "").strip()):
                 row.role = role_new
+
+            # Contradiction detection
+            new_profile_text = (patch.profile or "").strip()
+            existing_profile_text = (getattr(row, "profile", None) or "").strip()
+            if new_profile_text and existing_profile_text:
+                detected = _detect_profile_contradictions(existing_profile_text, new_profile_text)
+                if detected:
+                    contradictions.append({
+                        "character_name": name,
+                        "character_id": row.id,
+                        "conflicts": detected,
+                    })
+
+            # Profile versioning before merge
+            if new_profile_text and existing_profile_text and op.merge_mode_profile != "append_missing":
+                _record_profile_version(row, new_profile_text, chapter_id=chapter_id)
 
             row.profile = _merge_text(getattr(row, "profile", None), patch.profile, op.merge_mode_profile)
             row.notes = _merge_text(getattr(row, "notes", None), patch.notes, op.merge_mode_notes)
@@ -312,6 +398,7 @@ def apply_characters_auto_update_ops(
         "deduped": int(deduped),
         "deleted": int(deleted),
         "skipped": skipped,
+        "contradictions": contradictions,
     }
 
 
@@ -629,7 +716,7 @@ def characters_auto_update_v1(
 
     db_apply = SessionLocal()
     try:
-        out = apply_characters_auto_update_ops(db=db_apply, project_id=pid, ops=ops_out)
+        out = apply_characters_auto_update_ops(db=db_apply, project_id=pid, ops=ops_out, chapter_id=cid)
         if not bool(out.get("ok")):
             return {
                 "ok": False,

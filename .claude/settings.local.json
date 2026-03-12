@@ -2,7 +2,26 @@
   "permissions": {
     "allow": [
       "Bash(grep -r \"DeepSeek\\\\|deepseek\\\\|DeepSeek\\\\|''''DeepSeek''''\" /c/AI/w/Ai-Novel/backend --include=*.py)",
-      "Bash(xargs grep:*)"
+      "Bash(xargs grep:*)",
+      "Bash(ls -la /c/AI/w/Ai-Novel/backend/*.py /c/AI/w/Ai-Novel/backend/*.toml /c/AI/w/Ai-Novel/backend/*.ini /c/AI/w/Ai-Novel/backend/*.txt)",
+      "Bash(find c:AIwAi-Novelbackendappservices -name *style* -o -name *resolution*)",
+      "Bash(ls c:/AI/w/Ai-Novel/backend/app/services/*.py)",
+      "Bash(ls -lt /c/AI/w/Ai-Novel/backend/alembic/versions/*.py)",
+      "Bash(python -c \"from app.services.memory_retrieval_service import retrieve_memory_context_pack, invalidate_project_settings_cache; print\\(''OK''\\)\")",
+      "Bash(python -c \"from app.services.project_task_service import project_task_to_dict; print\\(''OK''\\)\")",
+      "Bash(python -c \"from app.services.project_task_event_service import project_task_event_task_payload; print\\(''OK''\\)\")",
+      "Bash(python -c \"from app.services.project_task_runtime_service import reap_stale_running_tasks; print\\(''OK''\\)\")",
+      "Bash(python -c \"from app.api.routes.settings import router; print\\(''OK''\\)\")",
+      "Bash(python -c \"from app.services.project_task_runtime_service import maintain_stale_running_tasks; print\\(''OK''\\)\")",
+      "Bash(python -c \"import app.services.project_task_runtime_service; print\\(''OK''\\)\")",
+      "Bash(python -c \":*)",
+      "Bash(grep -E \"\\\\.tsx?$\")",
+      "Bash(find /c/AI/w/Ai-Novel/frontend/src/pages -name *[Ww]riting* -o -name *[Ee]ditor*)",
+      "Bash(grep -r preview /c/AI/w/Ai-Novel/backend/app/api/routes/*.py)",
+      "Bash(find /c/AI/w/Ai-Novel/frontend/src -name *Generate* -o -name *generate*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx --no tsc --noEmit --pretty false src/components/writing/AiGenerateDrawer.tsx)",
+      "Bash(python3 -c \":*)"
     ]
   }
 }

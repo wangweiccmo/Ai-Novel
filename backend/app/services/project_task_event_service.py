@@ -13,6 +13,7 @@ from app.core.secrets import redact_api_keys
 from app.db.utils import utc_now
 from app.models.project_task import ProjectTask
 from app.models.project_task_event import ProjectTaskEvent
+from app.services.task_error_visibility import get_user_visible_errors
 
 
 def _compact_json_dumps(value: Any) -> str:
@@ -55,6 +56,7 @@ def project_task_event_task_payload(task: ProjectTask) -> dict[str, Any]:
         "attempt": int(getattr(task, "attempt", 0) or 0),
         "error_type": error_type,
         "error_message": error_message,
+        "user_visible_errors": get_user_visible_errors(task),
         "timings": {
             "created_at": _iso(task.created_at),
             "started_at": _iso(task.started_at),

@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import type { ProjectTaskRuntime } from "../../services/projectTaskRuntime";
 import { Modal } from "../ui/Modal";
@@ -63,6 +63,84 @@ function buildStepLabel(item: BatchGenerationTaskItem): string {
   const attempts = ` · 尝试 ${item.attempt_count} 次`;
   const error = item.error_message ? ` · ${item.error_message}` : "";
   return `${item.status}${attempts}${requestId}${error}`;
+}
+
+const ITEMS_PAGE_SIZE = 30;
+
+function BatchItemsList(props: {
+  items: BatchGenerationTaskItem[];
+  batchLoading: boolean;
+  batchApplying: boolean;
+  onApplyItemToEditor: (item: BatchGenerationTaskItem) => void;
+}) {
+  const [visibleCount, setVisibleCount] = useState(ITEMS_PAGE_SIZE);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  // Reset visible count when items change significantly
+  useEffect(() => {
+    setVisibleCount(ITEMS_PAGE_SIZE);
+  }, [props.items.length]);
+
+  // IntersectionObserver to load more items when scrolling
+  const loadMore = useCallback(() => {
+    setVisibleCount((prev) => Math.min(prev + ITEMS_PAGE_SIZE, props.items.length));
+  }, [props.items.length]);
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) loadMore();
+      },
+      { rootMargin: "100px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [loadMore]);
+
+  const visible = props.items.slice(0, visibleCount);
+  const hasMore = visibleCount < props.items.length;
+
+  return (
+    <section
+      className="max-h-72 overflow-auto rounded-atelier border border-border bg-canvas"
+      aria-label="batch_generation_items"
+    >
+      {props.items.length === 0 ? (
+        <div className="p-3 text-sm text-subtext">暂无批量条目。</div>
+      ) : (
+        <div className="divide-y divide-border">
+          {visible.map((item) => (
+            <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 px-3 py-2">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm text-ink">第 {item.chapter_number} 章</div>
+                <div className="mt-1 break-words text-xs text-subtext">{buildStepLabel(item)}</div>
+                {item.started_at || item.finished_at ? (
+                  <div className="mt-1 text-[11px] text-subtext">
+                    开始时间：{item.started_at || "-"} · 结束时间：{item.finished_at || "-"}
+                  </div>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-2">
+                {item.status === "succeeded" && item.chapter_id && item.generation_run_id ? (
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => props.onApplyItemToEditor(item)}
+                    disabled={props.batchLoading || props.batchApplying}
+                    type="button"
+                  >
+                    应用到编辑器
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ))}
+          {hasMore && <div ref={sentinelRef} className="p-2 text-center text-[11px] text-subtext">加载更多…</div>}
+        </div>
+      )}
+    </section>
+  );
 }
 
 export function BatchGenerationModal(props: {
@@ -358,42 +436,12 @@ export function BatchGenerationModal(props: {
                 )}
               </details>
 
-              <section
-                className="max-h-72 overflow-auto rounded-atelier border border-border bg-canvas"
-                aria-label="batch_generation_items"
-              >
-                {props.batchItems.length === 0 ? (
-                  <div className="p-3 text-sm text-subtext">暂无批量条目。</div>
-                ) : (
-                  <div className="divide-y divide-border">
-                    {props.batchItems.map((item) => (
-                      <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 px-3 py-2">
-                        <div className="min-w-0 flex-1">
-                          <div className="text-sm text-ink">第 {item.chapter_number} 章</div>
-                          <div className="mt-1 break-words text-xs text-subtext">{buildStepLabel(item)}</div>
-                          {item.started_at || item.finished_at ? (
-                            <div className="mt-1 text-[11px] text-subtext">
-                              开始时间：{item.started_at || "-"} · 结束时间：{item.finished_at || "-"}
-                            </div>
-                          ) : null}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {item.status === "succeeded" && item.chapter_id && item.generation_run_id ? (
-                            <button
-                              className="btn btn-secondary"
-                              onClick={() => props.onApplyItemToEditor(item)}
-                              disabled={props.batchLoading || props.batchApplying}
-                              type="button"
-                            >
-                              应用到编辑器
-                            </button>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </section>
+              <BatchItemsList
+                items={props.batchItems}
+                batchLoading={props.batchLoading}
+                batchApplying={props.batchApplying}
+                onApplyItemToEditor={props.onApplyItemToEditor}
+              />
             </>
           ) : null}
         </div>

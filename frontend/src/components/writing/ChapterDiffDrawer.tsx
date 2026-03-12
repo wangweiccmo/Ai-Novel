@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useState } from "react";
 
-import { buildNaiveUnifiedLineDiff } from "../../lib/textDiff";
+import { type DiffLine, computeLineDiff } from "../../lib/textDiff";
 import { Drawer } from "../ui/Drawer";
 
 type Props = {
@@ -13,6 +13,18 @@ type Props = {
 };
 
 type ViewMode = "diff" | "baseline" | "current";
+
+const LINE_STYLES: Record<DiffLine["type"], string> = {
+  remove: "bg-red-50 text-red-800 dark:bg-red-950/40 dark:text-red-300",
+  add: "bg-green-50 text-green-800 dark:bg-green-950/40 dark:text-green-300",
+  same: "",
+};
+
+const LINE_PREFIX: Record<DiffLine["type"], string> = {
+  remove: "-",
+  add: "+",
+  same: " ",
+};
 
 export function ChapterDiffDrawer(props: Props) {
   const { onClose, open } = props;
@@ -32,11 +44,21 @@ export function ChapterDiffDrawer(props: Props) {
 
   const baseline = String(props.baselineContentMd ?? "");
   const current = String(props.currentContentMd ?? "");
-  const diffText = useMemo(() => buildNaiveUnifiedLineDiff(baseline, current), [baseline, current]);
+  const diffLines = useMemo(() => computeLineDiff(baseline, current), [baseline, current]);
 
   const hasDiff = baseline.trim() !== current.trim();
   const baselineLabel = props.baselineLabel ?? "已保存版本";
   const currentLabel = props.currentLabel ?? "当前草稿";
+
+  const stats = useMemo(() => {
+    let added = 0;
+    let removed = 0;
+    for (const l of diffLines) {
+      if (l.type === "add") added++;
+      else if (l.type === "remove") removed++;
+    }
+    return { added, removed };
+  }, [diffLines]);
 
   return (
     <Drawer
@@ -74,10 +96,18 @@ export function ChapterDiffDrawer(props: Props) {
             </button>
           ))}
         </div>
+        {mode === "diff" && hasDiff && (
+          <div className="flex items-center gap-3 text-xs">
+            <span className="text-green-600 dark:text-green-400">+{stats.added} 行</span>
+            <span className="text-red-600 dark:text-red-400">-{stats.removed} 行</span>
+          </div>
+        )}
       </div>
 
       <div className="mt-3 text-[11px] text-subtext">
-        {hasDiff ? "提示：- 表示删除行，+ 表示新增行。" : "提示：已保存版本与当前草稿内容一致，无差异。"}
+        {hasDiff
+          ? "提示：红色背景为删除行，绿色背景为新增行。"
+          : "提示：已保存版本与当前草稿内容一致，无差异。"}
       </div>
 
       <div className="mt-4">
@@ -90,9 +120,26 @@ export function ChapterDiffDrawer(props: Props) {
             {current || "（空）"}
           </pre>
         ) : (
-          <pre className="max-h-[60vh] overflow-auto rounded-atelier border border-border bg-surface p-4 text-xs text-ink">
-            {hasDiff ? diffText : "（无差异）"}
-          </pre>
+          <div className="max-h-[60vh] overflow-auto rounded-atelier border border-border bg-surface text-xs">
+            {hasDiff ? (
+              <table className="w-full border-collapse font-mono">
+                <tbody>
+                  {diffLines.map((line, idx) => (
+                    <tr key={idx} className={LINE_STYLES[line.type]}>
+                      <td className="w-6 select-none px-2 py-px text-right text-[10px] opacity-40">
+                        {LINE_PREFIX[line.type]}
+                      </td>
+                      <td className="whitespace-pre-wrap break-all px-2 py-px">
+                        {line.content || "\u00A0"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <div className="p-4 text-subtext">（无差异）</div>
+            )}
+          </div>
         )}
       </div>
     </Drawer>

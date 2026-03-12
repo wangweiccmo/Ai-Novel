@@ -7,6 +7,8 @@ import { useToast } from "../ui/toast";
 import type { Character, LLMPreset } from "../../types";
 import type { GenerateForm } from "./types";
 import { ApiError, apiJson } from "../../services/apiClient";
+import { IntentTemplateSelector } from "./IntentTemplateSelector";
+import { StylePreviewDrawer } from "./StylePreviewDrawer";
 
 type Props = {
   open: boolean;
@@ -20,6 +22,7 @@ type Props = {
   setGenForm: Dispatch<SetStateAction<GenerateForm>>;
   characters: Character[];
   streamProgress?: { message: string; progress: number; status: string; charCount?: number } | null;
+  contextEstimate?: { estimated_context_tokens: number } | null;
   onClose: () => void;
   onSave: () => void | Promise<unknown>;
   onSaveAndGenerateNext?: () => void | Promise<unknown>;
@@ -54,6 +57,7 @@ export function AiGenerateDrawer(props: Props) {
   const [projectDefaultStyleId, setProjectDefaultStyleId] = useState<string | null>(null);
   const [stylesError, setStylesError] = useState<ApiError | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [stylePreviewOpen, setStylePreviewOpen] = useState(false);
   const [intentCard, setIntentCard] = useState({
     style: "",
     pov: "",
@@ -224,6 +228,11 @@ export function AiGenerateDrawer(props: Props) {
                   </button>
                 </div>
               </div>
+              <IntentTemplateSelector
+                disabled={props.generating}
+                currentValues={intentCard}
+                onApplyTemplate={(values) => setIntentCard(values)}
+              />
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
                 <label className="grid gap-1">
                   <span className="text-[11px] text-subtext">风格</span>
@@ -325,6 +334,14 @@ export function AiGenerateDrawer(props: Props) {
                 项目默认：{projectDefaultStyle ? projectDefaultStyle.name : "（未设置）"}
                 {stylesError ? ` | 加载失败：${stylesError.code}` : ""}
               </div>
+              <button
+                className="btn btn-secondary mt-1 text-[11px]"
+                disabled={props.generating || stylesLoading}
+                onClick={() => setStylePreviewOpen(true)}
+                type="button"
+              >
+                预览风格
+              </button>
             </label>
           </div>
         </div>
@@ -391,7 +408,9 @@ export function AiGenerateDrawer(props: Props) {
                     }}
                   />
                 </label>
-                <div className="mt-1 text-[11px] text-subtext">留空将自动使用“用户指令 + 章节计划”。</div>
+                <div className=”mt-1 text-[11px] text-subtext”>
+                  {“留空将自动使用「用户指令 + 章节计划」。查询预处理（标签提取、排除规则）在项目设置中配置，可在上下文预览中查看效果。”}
+                </div>
 
                 <div className="mt-3 grid gap-2">
                   <div className="text-xs text-subtext">注入模块</div>
@@ -870,6 +889,22 @@ export function AiGenerateDrawer(props: Props) {
             回退默认
           </button>
         ) : null}
+        {props.contextEstimate && props.contextEstimate.estimated_context_tokens > 0 ? (
+          <div className="flex items-center gap-2 rounded-atelier border border-border bg-surface px-3 py-1.5 text-xs">
+            <span className="text-subtext">上下文</span>
+            <span
+              className={
+                props.contextEstimate.estimated_context_tokens > 100000
+                  ? "font-medium text-red-500"
+                  : props.contextEstimate.estimated_context_tokens > 50000
+                    ? "font-medium text-yellow-600"
+                    : "text-ink"
+              }
+            >
+              ~{(props.contextEstimate.estimated_context_tokens / 1000).toFixed(1)}k tokens
+            </span>
+          </div>
+        ) : null}
         <button
           className="btn btn-primary"
           disabled={props.generating || !props.activeChapter}
@@ -905,6 +940,17 @@ export function AiGenerateDrawer(props: Props) {
           {props.saving ? "保存中..." : "保存"}
         </button>
       </div>
+
+      {props.projectId && (
+        <StylePreviewDrawer
+          open={stylePreviewOpen}
+          onClose={() => setStylePreviewOpen(false)}
+          projectId={props.projectId}
+          presets={presets}
+          userStyles={userStyles}
+          currentStyleId={props.genForm.style_id}
+        />
+      )}
     </Drawer>
   );
 }

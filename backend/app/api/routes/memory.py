@@ -49,6 +49,7 @@ from app.services.output_contracts import contract_for_task
 from app.services.prompt_presets import _ensure_default_preset_from_resource, render_preset_for_task
 from app.services.search_index_service import schedule_search_rebuild_task
 from app.services.vector_rag_service import schedule_vector_rebuild_task
+from app.services.memory_query_service import normalize_query_text, parse_query_preprocessing_config
 
 router = APIRouter()
 logger = logging.getLogger("ainovel")
@@ -119,15 +120,25 @@ def preview_project_memory(
 ) -> dict:
     request_id = request.state.request_id
     require_project_viewer(db, project_id=project_id, user_id=user_id)
+
+    # Apply query preprocessing (same as actual generation flow)
+    settings = db.get(ProjectSettings, project_id)
+    preprocess_config = parse_query_preprocessing_config(settings.query_preprocessing_json if settings else None)
+    normalized_query, preprocess_obs = normalize_query_text(query_text=body.query_text, config=preprocess_config)
+
     pack = retrieve_memory_context_pack(
         db=db,
         project_id=project_id,
-        query_text=body.query_text,
+        query_text=normalized_query,
         include_deleted=False,
         section_enabled=body.section_enabled,
         budget_overrides=body.budget_overrides,
     )
-    return ok_payload(request_id=request_id, data=pack.model_dump())
+    data = pack.model_dump()
+    data["raw_query_text"] = body.query_text
+    data["normalized_query_text"] = normalized_query
+    data["preprocess_obs"] = preprocess_obs
+    return ok_payload(request_id=request_id, data=data)
 
 
 StoryMemoryImportSchemaVersion = Literal["story_memory_import_v1"]

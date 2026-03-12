@@ -16,6 +16,8 @@
     "sys.story.smart_context.recent_summaries",
     "sys.story.smart_context.story_skeleton",
     "sys.story.smart_context.recent_full",
+    "sys.story.arc_phase",
+    "sys.story.continuity_warnings",
     "doc.chapter.notes",
     "sys.memory.worldbook",
     "sys.memory.story_memory",
@@ -199,6 +201,46 @@
       "budget": {
         "priority": "important",
         "maxTokens": 4200
+      },
+      "cache": null
+    },
+    {
+      "identifier": "sys.story.arc_phase",
+      "name": "素材：弧线阶段指导（可选）",
+      "role": "system",
+      "enabled": true,
+      "template_file": "templates/sys.story.arc_phase.md",
+      "marker_key": null,
+      "injection_position": "relative",
+      "injection_depth": null,
+      "injection_order": 95,
+      "triggers": [
+        "chapter_generate"
+      ],
+      "forbid_overrides": false,
+      "budget": {
+        "priority": "important",
+        "maxTokens": 600
+      },
+      "cache": null
+    },
+    {
+      "identifier": "sys.story.continuity_warnings",
+      "name": "素材：连续性审计警告（可选）",
+      "role": "system",
+      "enabled": true,
+      "template_file": "templates/sys.story.continuity_warnings.md",
+      "marker_key": null,
+      "injection_position": "relative",
+      "injection_depth": null,
+      "injection_order": 96,
+      "triggers": [
+        "chapter_generate"
+      ],
+      "forbid_overrides": false,
+      "budget": {
+        "priority": "important",
+        "maxTokens": 800
       },
       "cache": null
     },

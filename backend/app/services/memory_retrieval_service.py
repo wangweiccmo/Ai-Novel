@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import threading
+import time
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -15,8 +17,10 @@ from app.models.structured_memory import MemoryEntity, MemoryEvent, MemoryForesh
 from app.schemas.memory_pack import MemoryContextPackOut
 from app.services.fractal_memory_service import enrich_fractal_context_for_query, get_fractal_context
 from app.services.graph_context_service import query_graph_context
+from app.services.memory_dedup_service import deduplicate_memory_sections
 from app.services.prompt_budget import estimate_tokens
 from app.services.table_context_service import build_tables_context_text_md
+from app.services.token_budget_allocator import allocate_memory_budgets, BudgetAllocation
 from app.services.vector_rerank_overrides import vector_rerank_overrides
 from app.services.vector_embedding_overrides import vector_embedding_overrides
 from app.services.vector_rag_service import query_project, vector_rag_status
@@ -37,6 +41,40 @@ _ALLOWED_SECTIONS = {
     "fractal",
 }
 _MAX_BUDGET_CHAR_LIMIT = 50000
+
+# ── Process-level cache for ProjectSettings (TTL 30s) ──────────────
+_SETTINGS_CACHE_TTL = 30.0
+_settings_cache: dict[str, tuple[float, ProjectSettings | None]] = {}
+_settings_cache_lock = threading.Lock()
+
+
+def _get_project_settings_cached(db: Session, project_id: str) -> ProjectSettings | None:
+    """Fetch ProjectSettings with a process-level TTL cache (30s).
+
+    ProjectSettings changes rarely (only on explicit user edits), so caching
+    avoids repeated DB round-trips within the same generation pipeline.
+    """
+    now = time.monotonic()
+    with _settings_cache_lock:
+        entry = _settings_cache.get(project_id)
+        if entry is not None:
+            ts, cached = entry
+            if now - ts < _SETTINGS_CACHE_TTL:
+                return cached
+
+    row = db.get(ProjectSettings, project_id)
+    with _settings_cache_lock:
+        _settings_cache[project_id] = (now, row)
+    return row
+
+
+def invalidate_project_settings_cache(project_id: str | None = None) -> None:
+    """Call when ProjectSettings is updated to clear the cache."""
+    with _settings_cache_lock:
+        if project_id is None:
+            _settings_cache.clear()
+        else:
+            _settings_cache.pop(project_id, None)
 
 
 def _clamp_char_limit(value: object, *, default: int) -> int:
@@ -75,8 +113,8 @@ def _wrap_block_with_inner_limit(*, tag: str, inner: str, char_limit: int, ellip
     return f"{prefix}{body}{suffix}", truncated
 
 
-def _vector_rerank_config(*, db: Session, project_id: str) -> dict[str, object]:
-    return vector_rerank_overrides(db.get(ProjectSettings, project_id))
+def _vector_rerank_config(*, settings_row: ProjectSettings | None) -> dict[str, object]:
+    return vector_rerank_overrides(settings_row)
 
 
 def _wrap_and_truncate_block(*, tag: str, inner: str, char_limit: int) -> tuple[str, bool]:
@@ -143,14 +181,30 @@ def _format_semantic_history_text_md(
     return _wrap_and_truncate_block(tag="SemanticHistory", inner="\n\n".join(parts), char_limit=char_limit)
 
 
-def _format_foreshadow_open_loops_text_md(*, foreshadows: list[StoryMemory], char_limit: int) -> tuple[str, bool]:
+FORESHADOW_OVERDUE_CHAPTER_THRESHOLD = 15
+
+
+def _format_foreshadow_open_loops_text_md(
+    *,
+    foreshadows: list[StoryMemory],
+    char_limit: int,
+    current_chapter_number: int = 0,
+) -> tuple[str, bool]:
     parts: list[str] = []
     for m in foreshadows:
         title = str(m.title or "").strip() or "Untitled"
         content = str(m.content or "").strip()
         if len(content) > 800:
             content = content[:800].rstrip() + "…"
-        parts.append(f"### {title}\n{content}".rstrip())
+        # Overdue warning for foreshadows open too long
+        overdue_tag = ""
+        if current_chapter_number > 0:
+            planted_at = int(m.story_timeline or 0)
+            if planted_at > 0:
+                gap = current_chapter_number - planted_at
+                if gap >= FORESHADOW_OVERDUE_CHAPTER_THRESHOLD:
+                    overdue_tag = f" ⚠[警告：此伏笔已超过{gap}章未兑现，请考虑在近期章节中回收]"
+        parts.append(f"### {title}{overdue_tag}\n{content}".rstrip())
     return _wrap_and_truncate_block(tag="ForeshadowOpenLoops", inner="\n\n".join(parts), char_limit=char_limit)
 
 
@@ -225,7 +279,9 @@ def _format_structured_text_md(
             if len(content) > 320:
                 content = content[:320].rstrip() + "…"
             resolved = bool(getattr(f, "resolved", 0))
-            lines.append(f"- {'[resolved] ' if resolved else ''}{title}{f': {content}' if content else ''}".rstrip())
+            status = str(getattr(f, "status", "") or "").strip() or ("resolved" if resolved else "open")
+            status_tag = f"[{status}] " if status != "open" else ""
+            lines.append(f"- {status_tag}{title}{f': {content}' if content else ''}".rstrip())
         if lines:
             sections.append("## Foreshadows\n" + "\n".join(lines))
 
@@ -240,6 +296,7 @@ def retrieve_memory_context_pack(
     include_deleted: bool = False,
     section_enabled: dict[str, bool] | None = None,
     budget_overrides: dict[str, int] | None = None,
+    current_chapter_number: int = 0,
 ) -> MemoryContextPackOut:
     """
     Must be safe when memory dependencies (vector DB / embeddings / etc.) are missing.
@@ -257,41 +314,37 @@ def retrieve_memory_context_pack(
     graph_enabled = bool(enabled_map.get("graph", True))
     fractal_enabled = bool(enabled_map.get("fractal", True)) and bool(getattr(settings, "fractal_enabled", True))
 
-    worldbook_budget = _clamp_char_limit(budgets.get("worldbook"), default=12000) if "worldbook" in budgets else 12000
-    story_memory_budget = (
-        _clamp_char_limit(budgets.get("story_memory"), default=_MEMORY_TEXT_MD_CHAR_LIMIT)
-        if "story_memory" in budgets
-        else _MEMORY_TEXT_MD_CHAR_LIMIT
+    # ── Request-scoped: fetch ProjectSettings once for the entire call ──
+    _project_settings = _get_project_settings_cached(db, project_id)
+
+    # --- Global token budget allocation (P0 optimization) ---
+    # Use the allocator to distribute a shared token pool across sections
+    # instead of independent per-section char limits.
+    _enabled_sections = {
+        "worldbook": worldbook_enabled,
+        "story_memory": story_memory_enabled,
+        "semantic_history": semantic_history_enabled,
+        "foreshadow_open_loops": foreshadow_open_loops_enabled,
+        "structured": structured_enabled,
+        "tables": tables_enabled,
+        "vector_rag": vector_rag_enabled,
+        "graph": graph_enabled,
+        "fractal": fractal_enabled,
+    }
+    _budget_allocation = allocate_memory_budgets(
+        enabled_sections=_enabled_sections,
+        budget_overrides_chars=budgets if budgets else None,
     )
-    semantic_history_budget = (
-        _clamp_char_limit(budgets.get("semantic_history"), default=_MEMORY_TEXT_MD_CHAR_LIMIT)
-        if "semantic_history" in budgets
-        else _MEMORY_TEXT_MD_CHAR_LIMIT
-    )
-    foreshadow_open_loops_budget = (
-        _clamp_char_limit(budgets.get("foreshadow_open_loops"), default=_MEMORY_TEXT_MD_CHAR_LIMIT)
-        if "foreshadow_open_loops" in budgets
-        else _MEMORY_TEXT_MD_CHAR_LIMIT
-    )
-    structured_budget = (
-        _clamp_char_limit(budgets.get("structured"), default=_MEMORY_TEXT_MD_CHAR_LIMIT)
-        if "structured" in budgets
-        else _MEMORY_TEXT_MD_CHAR_LIMIT
-    )
-    tables_budget = _clamp_char_limit(budgets.get("tables"), default=_MEMORY_TEXT_MD_CHAR_LIMIT) if "tables" in budgets else _MEMORY_TEXT_MD_CHAR_LIMIT
-    vector_rag_budget = (
-        _clamp_char_limit(budgets.get("vector_rag"), default=int(getattr(settings, "vector_final_char_limit", 6000) or 6000))
-        if "vector_rag" in budgets
-        else int(getattr(settings, "vector_final_char_limit", 6000) or 6000)
-    )
-    graph_budget = (
-        _clamp_char_limit(budgets.get("graph"), default=6000) if "graph" in budgets else 6000
-    )
-    fractal_budget = (
-        _clamp_char_limit(budgets.get("fractal"), default=int(getattr(settings, "fractal_char_limit", 6000) or 6000))
-        if "fractal" in budgets
-        else int(getattr(settings, "fractal_char_limit", 6000) or 6000)
-    )
+
+    worldbook_budget = _budget_allocation.char_limit_for("worldbook") or 12000
+    story_memory_budget = _budget_allocation.char_limit_for("story_memory") or _MEMORY_TEXT_MD_CHAR_LIMIT
+    semantic_history_budget = _budget_allocation.char_limit_for("semantic_history") or _MEMORY_TEXT_MD_CHAR_LIMIT
+    foreshadow_open_loops_budget = _budget_allocation.char_limit_for("foreshadow_open_loops") or _MEMORY_TEXT_MD_CHAR_LIMIT
+    structured_budget = _budget_allocation.char_limit_for("structured") or _MEMORY_TEXT_MD_CHAR_LIMIT
+    tables_budget = _budget_allocation.char_limit_for("tables") or _MEMORY_TEXT_MD_CHAR_LIMIT
+    vector_rag_budget = _budget_allocation.char_limit_for("vector_rag") or int(getattr(settings, "vector_final_char_limit", 6000) or 6000)
+    graph_budget = _budget_allocation.char_limit_for("graph") or 6000
+    fractal_budget = _budget_allocation.char_limit_for("fractal") or int(getattr(settings, "fractal_char_limit", 6000) or 6000)
 
     if worldbook_enabled:
         worldbook_preview = preview_worldbook_trigger(
@@ -388,8 +441,8 @@ def retrieve_memory_context_pack(
             }
 
     vector_query_text = (query_text or "").strip()
-    embedding_overrides = vector_embedding_overrides(db.get(ProjectSettings, project_id))
-    rerank_config = _vector_rerank_config(db=db, project_id=project_id)
+    embedding_overrides = vector_embedding_overrides(_project_settings)
+    rerank_config = _vector_rerank_config(settings_row=_project_settings)
 
     semantic_history: dict[str, Any] = {"enabled": False, "disabled_reason": "empty", "items": [], "text_md": ""}
     if not semantic_history_enabled:
@@ -555,6 +608,7 @@ def retrieve_memory_context_pack(
             text_md, text_truncated = _format_foreshadow_open_loops_text_md(
                 foreshadows=rows[:12],
                 char_limit=int(foreshadow_open_loops_budget),
+                current_chapter_number=current_chapter_number,
             )
             enabled = bool(rows)
             foreshadow_open_loops = {
@@ -597,21 +651,24 @@ def retrieve_memory_context_pack(
             foreshadows = db.execute(foreshadows_stmt.order_by(MemoryForeshadow.updated_at.desc()).limit(21)).scalars().all()
             enabled = bool(entities or relations or events or foreshadows)
 
+            # Build entity name map from already-fetched entities to avoid extra query
             rel_entity_ids: set[str] = set()
             for r in relations[:40]:
                 rel_entity_ids.add(str(r.from_entity_id))
                 rel_entity_ids.add(str(r.to_entity_id))
-            entity_name_rows = []
-            if rel_entity_ids:
-                entity_name_stmt = (
+            name_by_id = {str(e.id): str(e.name or "") for e in entities if str(e.id) in rel_entity_ids}
+            # Only fetch missing entity names not in the initial 21-row batch
+            missing_ids = rel_entity_ids - set(name_by_id.keys())
+            if missing_ids:
+                extra_name_stmt = (
                     select(MemoryEntity.id, MemoryEntity.name)
                     .where(MemoryEntity.project_id == project_id)
-                    .where(MemoryEntity.id.in_(list(rel_entity_ids)))
+                    .where(MemoryEntity.id.in_(list(missing_ids)))
                 )
                 if not include_deleted:
-                    entity_name_stmt = entity_name_stmt.where(MemoryEntity.deleted_at.is_(None))
-                entity_name_rows = db.execute(entity_name_stmt).all()
-            name_by_id = {str(eid): str(name or "") for eid, name in entity_name_rows}
+                    extra_name_stmt = extra_name_stmt.where(MemoryEntity.deleted_at.is_(None))
+                for eid, ename in db.execute(extra_name_stmt).all():
+                    name_by_id[str(eid)] = str(ename or "")
             relations_preview = []
             for r in relations[:40]:
                 relations_preview.append(
@@ -885,6 +942,31 @@ def retrieve_memory_context_pack(
             "budget_source": "override" if "fractal" in budgets else "default",
         },
     ]
+
+    # ── Cross-module deduplication ────────────────────────────────────
+    _dedup_sections = {
+        "worldbook": worldbook,
+        "story_memory": story_memory,
+        "semantic_history": semantic_history,
+        "foreshadow_open_loops": foreshadow_open_loops,
+        "structured": structured,
+        "tables": tables,
+        "vector_rag": vector_rag,
+        "graph": graph,
+        "fractal": fractal,
+    }
+    _dedup_result, _dedup_log = deduplicate_memory_sections(_dedup_sections)
+    if _dedup_log:
+        worldbook = _dedup_result.get("worldbook", worldbook)
+        story_memory = _dedup_result.get("story_memory", story_memory)
+        semantic_history = _dedup_result.get("semantic_history", semantic_history)
+        foreshadow_open_loops = _dedup_result.get("foreshadow_open_loops", foreshadow_open_loops)
+        structured = _dedup_result.get("structured", structured)
+        tables = _dedup_result.get("tables", tables)
+        vector_rag = _dedup_result.get("vector_rag", vector_rag)
+        graph = _dedup_result.get("graph", graph)
+        fractal = _dedup_result.get("fractal", fractal)
+        logs.append({"section": "_dedup", "removed": _dedup_log})
 
     return MemoryContextPackOut.model_validate(
         redact_api_keys(

@@ -11,6 +11,13 @@ _CODE_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", flags=re.IGNORECASE
 
 _CHAPTER_CONTENT_MARKER_RE = re.compile(r"(?mi)^[ \t]*<<<\s*CONTENT\b\s*(?:>{1,3})?\s*")
 _CHAPTER_SUMMARY_MARKER_RE = re.compile(r"(?mi)^[ \t]*<<<\s*SUMMARY\b\s*(?:>{1,3})?\s*")
+_PLOT_ADVANCEMENT_RE = re.compile(
+    r"<!--\s*PLOT_ADVANCEMENT\s*\n"
+    r"\s*information_push:\s*(.+?)\n"
+    r"\s*consequence_cost:\s*(.+?)\n"
+    r"\s*-->",
+    re.DOTALL,
+)
 
 
 class OutlineChapterSchema(BaseModel):
@@ -278,14 +285,39 @@ def _split_chapter_markers(text: str) -> tuple[str | None, str | None]:
     return content, summary
 
 
+def _extract_plot_advancement(text: str) -> dict[str, str] | None:
+    """Extract the PLOT_ADVANCEMENT comment block from chapter output."""
+    m = _PLOT_ADVANCEMENT_RE.search(text)
+    if m is None:
+        return None
+    info_push = (m.group(1) or "").strip().strip("（）()")
+    consequence = (m.group(2) or "").strip().strip("（）()")
+    if not info_push and not consequence:
+        return None
+    return {"information_push": info_push, "consequence_cost": consequence}
+
+
+def _strip_plot_advancement_comment(text: str) -> str:
+    """Remove the PLOT_ADVANCEMENT HTML comment from content so it doesn't appear in final text."""
+    return _PLOT_ADVANCEMENT_RE.sub("", text).rstrip()
+
+
 def parse_chapter_output(
     text: str, *, finish_reason: str | None = None
 ) -> tuple[dict[str, Any], list[str], dict[str, Any] | None]:
     warnings: list[str] = []
 
+    # Extract plot advancement self-report before parsing content
+    plot_advancement = _extract_plot_advancement(text)
+
     content, summary = _split_chapter_markers(text)
     if content is not None:
+        content = _strip_plot_advancement_comment(content)
         data = {"content_md": content, "summary": summary or "", "raw_output": text}
+        if plot_advancement:
+            data["plot_advancement"] = plot_advancement
+        else:
+            warnings.append("plot_advancement_missing")
         if finish_reason == "length":
             warnings.append("output_truncated")
             data["parse_error"] = {
@@ -301,9 +333,14 @@ def parse_chapter_output(
         content_md = value.get("content_md")
         if not isinstance(content_md, str) or not content_md.strip():
             content_md = text
+        content_md = _strip_plot_advancement_comment(content_md)
         summary_val = value.get("summary")
         summary_text = str(summary_val) if summary_val is not None else ""
         data = {"content_md": content_md, "summary": summary_text, "raw_output": text}
+        if plot_advancement:
+            data["plot_advancement"] = plot_advancement
+        else:
+            warnings.append("plot_advancement_missing")
         if raw_json:
             data["raw_json"] = raw_json
         if finish_reason == "length":
@@ -314,7 +351,12 @@ def parse_chapter_output(
             }
         return data, warnings, data.get("parse_error")
 
-    data = {"content_md": text, "summary": "", "raw_output": text}
+    cleaned_text = _strip_plot_advancement_comment(text)
+    data = {"content_md": cleaned_text, "summary": "", "raw_output": text}
+    if plot_advancement:
+        data["plot_advancement"] = plot_advancement
+    else:
+        warnings.append("plot_advancement_missing")
     if finish_reason == "length":
         warnings.append("output_truncated")
         data["parse_error"] = {

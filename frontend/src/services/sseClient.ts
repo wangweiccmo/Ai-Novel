@@ -36,14 +36,28 @@ export type SSEClientOptions = {
 export class SSEError extends Error {
   code: string;
   requestId?: string;
+  userFriendlyMessage?: string;
 
   constructor(args: { code: string; message: string; requestId?: string }) {
     super(args.message);
     this.name = "SSEError";
     this.code = args.code;
     this.requestId = args.requestId;
+    this.userFriendlyMessage = SSE_ERROR_MESSAGES[args.code];
   }
 }
+
+/** User-friendly translations for SSE error codes. */
+const SSE_ERROR_MESSAGES: Record<string, string> = {
+  ABORTED: "连接被中断，请检查网络后重试",
+  SSE_CONNECTION_ERROR: "无法连接到服务器，请检查网络连接",
+  SSE_SERVER_ERROR: "服务器处理异常，请稍后重试",
+  SSE_TIMEOUT: "请求超时，建议减少生成字数或切换非流式模式",
+  SSE_BAD_RESPONSE: "服务器返回异常响应",
+  SSE_PROTOCOL_ERROR: "通信协议异常，请刷新页面后重试",
+  SSE_STREAM_ERROR: "数据流读取失败，请检查网络稳定性",
+  SSE_EARLY_CLOSE: "连接提前断开，请检查网络后重试",
+};
 
 async function parseJsonSafe(res: Response): Promise<unknown> {
   const text = await res.text();

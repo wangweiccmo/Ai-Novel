@@ -15,6 +15,7 @@ import { ChapterListPanel } from "../components/writing/ChapterListPanel";
 import { ChapterDiffDrawer } from "../components/writing/ChapterDiffDrawer";
 import { CreateChapterDialog } from "../components/writing/CreateChapterDialog";
 import { ChapterAnalysisModal } from "../components/writing/ChapterAnalysisModal";
+import { ChapterPlanSidebar } from "../components/writing/ChapterPlanSidebar";
 import { ContentOptimizeCompareDrawer } from "../components/writing/ContentOptimizeCompareDrawer";
 import { ContextPreviewDrawer } from "../components/writing/ContextPreviewDrawer";
 import { ForeshadowDrawer } from "../components/writing/ForeshadowDrawer";
@@ -23,6 +24,7 @@ import { MemoryUpdateDrawer } from "../components/writing/MemoryUpdateDrawer";
 import { PostEditCompareDrawer } from "../components/writing/PostEditCompareDrawer";
 import { PromptInspectorDrawer } from "../components/writing/PromptInspectorDrawer";
 import { TablesPanel } from "../components/writing/TablesPanel";
+import { WritingStatsBar } from "../components/writing/WritingStatsBar";
 import { WritingToolbar } from "../components/writing/WritingToolbar";
 import { useConfirm } from "../components/ui/confirm";
 import { useToast } from "../components/ui/toast";
@@ -772,6 +774,7 @@ export function WritingPage() {
           <ChapterListPanel
             chapters={chapters}
             activeId={activeId}
+            projectId={projectId}
             onSelectChapter={(chapterId) => void requestSelectChapter(chapterId)}
             emptyState={chapterListEmptyState}
           />
@@ -1089,10 +1092,26 @@ export function WritingPage() {
                 </div>
               )}
 
-              <div className="mt-4 text-xs text-subtext">快捷键：Ctrl/Cmd+S 保存 · Ctrl/Cmd+Enter AI 生成 · Alt+Up/Down 切换章节</div>
+              <div className="mt-4">
+                <WritingStatsBar
+                  chapters={chapters}
+                  currentContentMd={form?.content_md ?? ""}
+                  currentChapterNumber={activeChapter?.number ?? null}
+                />
+              </div>
             </div>
           )}
         </section>
+
+        {activeChapter && form ? (
+          <ChapterPlanSidebar
+            plan={form.plan ?? ""}
+            summary={form.summary ?? ""}
+            chapterNumber={activeChapter.number ?? null}
+            readOnly={isDoneReadonly}
+            onPlanChange={(v) => setForm((prev) => (prev ? { ...prev, plan: v } : prev))}
+          />
+        ) : null}
       </div>
 
       <CreateChapterDialog
@@ -1169,6 +1188,7 @@ export function WritingPage() {
           <ChapterListPanel
             chapters={chapters}
             activeId={activeId}
+            projectId={projectId}
             containerClassName="h-full"
             onSelectChapter={(chapterId) => {
               setChapterListOpen(false);

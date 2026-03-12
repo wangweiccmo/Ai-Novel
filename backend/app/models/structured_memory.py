@@ -105,6 +105,8 @@ class MemoryRelation(Base):
     relation_type: Mapped[str] = mapped_column(String(64), nullable=False, default="related_to")
     description_md: Mapped[str | None] = mapped_column(Text, nullable=True)
     attributes_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stage_history_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
@@ -149,6 +151,7 @@ class MemoryForeshadow(Base):
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     content_md: Mapped[str] = mapped_column(Text, nullable=False, default="")
     resolved: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
     attributes_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

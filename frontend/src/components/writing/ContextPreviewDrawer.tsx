@@ -238,6 +238,9 @@ export function ContextPreviewDrawer(props: Props) {
   const toast = useToast();
   const [loading, setLoading] = useState(false);
   const [pack, setPack] = useState<MemoryContextPack>(EMPTY_PACK);
+  const [packRawQueryText, setPackRawQueryText] = useState<string | null>(null);
+  const [packNormalizedQueryText, setPackNormalizedQueryText] = useState<string | null>(null);
+  const [packPreprocessObs, setPackPreprocessObs] = useState<unknown>(null);
   const [error, setError] = useState<{ code: string; message: string; requestId?: string } | null>(null);
   const [requestId, setRequestId] = useState<string | null>(null);
   const [contextOptimizerEnabled, setContextOptimizerEnabled] = useState<boolean | null>(null);
@@ -312,6 +315,11 @@ export function ContextPreviewDrawer(props: Props) {
           memory_injection_enabled: memoryInjectionEnabled,
         },
         pack: effectivePack ?? EMPTY_PACK,
+        pack_query_preprocess: {
+          raw_query_text: packRawQueryText,
+          normalized_query_text: packNormalizedQueryText,
+          preprocess_obs: packPreprocessObs,
+        },
         vector_query: {
           request_id: vector.vectorRequestId,
           query_text: vector.vectorQueryText,
@@ -513,7 +521,13 @@ export function ContextPreviewDrawer(props: Props) {
       setLoading(true);
       setError(null);
       try {
-        const res = await apiJson<MemoryContextPack>(`/api/projects/${projectId}/memory/preview`, {
+        const res = await apiJson<
+          MemoryContextPack & {
+            raw_query_text?: string;
+            normalized_query_text?: string;
+            preprocess_obs?: unknown;
+          }
+        >(`/api/projects/${projectId}/memory/preview`, {
           method: "POST",
           body: JSON.stringify({
             query_text: safeQueryText,
@@ -522,6 +536,9 @@ export function ContextPreviewDrawer(props: Props) {
           }),
         });
         setPack(res.data ?? EMPTY_PACK);
+        setPackRawQueryText(typeof res.data?.raw_query_text === "string" ? res.data.raw_query_text : null);
+        setPackNormalizedQueryText(typeof res.data?.normalized_query_text === "string" ? res.data.normalized_query_text : null);
+        setPackPreprocessObs(res.data?.preprocess_obs ?? null);
         setRequestId(res.request_id ?? null);
       } catch (e) {
         if (e instanceof ApiError) {
@@ -839,6 +856,36 @@ export function ContextPreviewDrawer(props: Props) {
             ) : (
               <div className="mt-3 text-sm text-subtext">No logs available.</div>
             )}
+          </details>
+        ) : null}
+
+        {memoryInjectionEnabled && packPreprocessObs ? (
+          <details className="panel p-4">
+            <summary className="ui-transition-fast cursor-pointer text-sm text-ink hover:text-ink">
+              查询预处理（query preprocess）
+            </summary>
+            <div className="mt-3 grid gap-3">
+              <div>
+                <div className="text-[11px] text-subtext">raw_query_text</div>
+                <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap rounded-atelier border border-border bg-surface p-2 text-xs text-ink">
+                  {packRawQueryText ?? ""}
+                </pre>
+              </div>
+              {packNormalizedQueryText !== packRawQueryText && (
+                <div>
+                  <div className="text-[11px] text-subtext">normalized_query_text</div>
+                  <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap rounded-atelier border border-border bg-surface p-2 text-xs text-ink">
+                    {packNormalizedQueryText ?? ""}
+                  </pre>
+                </div>
+              )}
+              <div>
+                <div className="text-[11px] text-subtext">preprocess_obs</div>
+                <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-atelier border border-border bg-surface p-2 text-xs text-ink">
+                  {JSON.stringify(packPreprocessObs, null, 2)}
+                </pre>
+              </div>
+            </div>
           </details>
         ) : null}
 

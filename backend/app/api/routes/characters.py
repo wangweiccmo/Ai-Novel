@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Request
 from sqlalchemy import select
 
@@ -9,6 +11,7 @@ from app.db.utils import new_id
 from app.models.character import Character
 from app.schemas.characters import CharacterCreate, CharacterOut, CharacterUpdate
 from app.services.search_index_service import schedule_search_rebuild_task
+from app.services.vector_index_refresh_service import mark_vector_dirty
 
 router = APIRouter()
 
@@ -57,9 +60,14 @@ def update_character(request: Request, db: DbDep, user_id: UserIdDep, character_
         row.profile = body.profile
     if body.notes is not None:
         row.notes = body.notes
+    if body.arc_stages is not None:
+        row.arc_stages_json = json.dumps(body.arc_stages, ensure_ascii=False)
+    if body.voice_samples is not None:
+        row.voice_samples_json = json.dumps(body.voice_samples, ensure_ascii=False)
 
     db.commit()
     db.refresh(row)
+    mark_vector_dirty(str(row.project_id), "character")
     schedule_search_rebuild_task(
         db=db, project_id=str(row.project_id), actor_user_id=user_id, request_id=request_id, reason="character_update"
     )

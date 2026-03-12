@@ -15,6 +15,7 @@ from app.db.session import SessionLocal
 from app.db.utils import utc_now
 from app.models.project_task import ProjectTask
 from app.services.project_task_event_service import append_project_task_event
+from app.services.task_error_visibility import record_user_visible_error
 from app.services.task_queue import get_task_queue, project_task_queue_has_task
 
 logger = logging.getLogger("ainovel")
@@ -153,6 +154,11 @@ def reconcile_project_tasks_once(*, reason: str, now=None) -> dict[str, int]:
                         "last_heartbeat_at": reference.isoformat().replace("+00:00", "Z"),
                     },
                 }
+            )
+            record_user_visible_error(
+                task, code="PROJECT_TASK_HEARTBEAT_TIMEOUT",
+                message="任务执行超时，已被系统自动终止",
+                details={"kind": str(task.kind), "reason": reason},
             )
             append_project_task_event(
                 db,

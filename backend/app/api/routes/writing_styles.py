@@ -7,14 +7,17 @@ from app.api.deps import DbDep, UserIdDep, require_project_editor
 from app.core.errors import AppError, ok_payload
 from app.db.utils import new_id
 from app.models.project_default_style import ProjectDefaultStyle
+from app.models.project_settings import ProjectSettings
 from app.models.writing_style import WritingStyle
 from app.schemas.writing_styles import (
     ProjectDefaultStyleOut,
     ProjectDefaultStylePutRequest,
+    StylePreviewRequest,
     WritingStyleCreateRequest,
     WritingStyleOut,
     WritingStyleUpdateRequest,
 )
+from app.services.style_resolution_service import resolve_composite_style
 
 router = APIRouter()
 
@@ -157,3 +160,45 @@ def put_project_default_style(
     db.refresh(row)
     out = ProjectDefaultStyleOut(project_id=project_id, style_id=row.style_id, updated_at=row.updated_at)
     return ok_payload(request_id=request_id, data={"default": out.model_dump()})
+
+
+@router.post("/projects/{project_id}/writing_styles/preview")
+def preview_styles(
+    request: Request,
+    db: DbDep,
+    user_id: UserIdDep,
+    project_id: str,
+    body: StylePreviewRequest,
+) -> dict:
+    """Resolve and preview one or two styles for A/B comparison."""
+    request_id = request.state.request_id
+    require_project_editor(db, project_id=project_id, user_id=user_id)
+
+    settings = db.get(ProjectSettings, project_id)
+    settings_style_guide = (settings.style_guide or "") if settings else ""
+
+    text_a, meta_a = resolve_composite_style(
+        db,
+        project_id=project_id,
+        user_id=user_id,
+        requested_style_id=body.style_id_a,
+        include_style_guide=True,
+        settings_style_guide=settings_style_guide,
+        scene_type=body.scene_type,
+    )
+
+    result: dict = {"a": {"text": text_a, "meta": meta_a}}
+
+    if body.style_id_b is not None:
+        text_b, meta_b = resolve_composite_style(
+            db,
+            project_id=project_id,
+            user_id=user_id,
+            requested_style_id=body.style_id_b,
+            include_style_guide=True,
+            settings_style_guide=settings_style_guide,
+            scene_type=body.scene_type,
+        )
+        result["b"] = {"text": text_b, "meta": meta_b}
+
+    return ok_payload(request_id=request_id, data={"preview": result})

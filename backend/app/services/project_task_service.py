@@ -15,6 +15,7 @@ from app.core.secrets import redact_api_keys
 from app.db.session import SessionLocal
 from app.db.utils import new_id, utc_now
 from app.models.project_task import ProjectTask
+from app.services.task_error_visibility import get_user_visible_errors, record_user_visible_error
 from app.services.project_task_event_service import (
     append_project_task_event,
     mark_project_task_enqueue_failed,
@@ -108,6 +109,8 @@ def project_task_to_dict(*, task: ProjectTask, include_payloads: bool) -> dict[s
         data["params"] = redact_api_keys(params) if params is not None else None
         data["result"] = redact_api_keys(result) if result is not None else None
         data["error"] = redact_api_keys(err) if err is not None else None
+
+    data["user_visible_errors"] = get_user_visible_errors(task)
 
     return data
 
@@ -1398,6 +1401,13 @@ def run_project_task(*, task_id: str) -> str:
 
                 task2.status = "failed"
                 task2.error_json = _compact_json_dumps(error_payload)
+                # Record user-visible error for frontend display
+                _user_msg = str(error_payload.get("message") or "自动更新失败")[:200]
+                _user_code = str(error_payload.get("code") or "AUTO_UPDATE_FAILED")
+                record_user_visible_error(
+                    task2, code=_user_code, message=_user_msg,
+                    details={"kind": str(task2.kind), "error_type": str(error_payload.get("error_type") or "")},
+                )
                 task2.heartbeat_at = utc_now()
                 task2.finished_at = utc_now()
                 append_project_task_event(

@@ -10,6 +10,7 @@ from app.core.errors import AppError
 from app.core.logging import redact_secrets_text
 from app.llm.messages import ChatMessage, normalize_role
 from app.services.generation_service import PreparedLlmCall, RecordedLlmResult, call_llm_and_record, with_param_overrides
+from app.services.llm_circuit_breaker import get_circuit_breaker
 
 _MAX_REQUEST_ID_LEN = 64
 
@@ -195,6 +196,25 @@ def call_llm_and_record_with_retries(
     base_req = str(request_id or "").strip()[:_MAX_REQUEST_ID_LEN]
     max_attempts2 = max(1, int(max_attempts or 0))
 
+    # --- Circuit breaker check (P0 optimization) ---
+    # Extract provider from the llm_call to get the right circuit breaker.
+    _provider_name = str(getattr(llm_call, "provider", "") or "unknown").strip()
+    _cb = get_circuit_breaker(_provider_name)
+    if not _cb.allow_request():
+        raise LlmRetryExhausted(
+            error_type="CircuitBreakerOpen",
+            error_message=f"LLM provider '{_provider_name}' circuit breaker is open due to repeated failures. Please wait and retry.",
+            error_code="LLM_CIRCUIT_OPEN",
+            status_code=503,
+            run_id=None,
+            attempts=[{"attempt": 0, "circuit_breaker": "open", "provider": _provider_name}],
+            last_exception=AppError(
+                code="LLM_CIRCUIT_OPEN",
+                message=f"Provider '{_provider_name}' is temporarily unavailable",
+                status_code=503,
+            ),
+        )
+
     for attempt in range(1, max_attempts2 + 1):
         req2 = build_retry_request_id(base_req, attempt=attempt)
         overrides = (llm_call_overrides_by_attempt or {}).get(attempt) or {}
@@ -239,6 +259,7 @@ def call_llm_and_record_with_retries(
                     "max_tokens": overrides.get("max_tokens"),
                 }
             )
+            _cb.record_success()
             return recorded, attempts
         except Exception as exc:
             error_code = _exc_error_code(exc)
@@ -259,6 +280,7 @@ def call_llm_and_record_with_retries(
             )
 
             if attempt >= max_attempts2 or not retryable:
+                _cb.record_failure()
                 raise LlmRetryExhausted(
                     error_type=type(exc).__name__,
                     error_message=_safe_error_message(exc),
