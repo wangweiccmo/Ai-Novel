@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import type { ProjectTaskRuntime } from "../../services/projectTaskRuntime";
 import { Modal } from "../ui/Modal";
@@ -71,10 +71,13 @@ function BatchItemsList(props: {
   items: BatchGenerationTaskItem[];
   batchLoading: boolean;
   batchApplying: boolean;
+  appliedRunIds: string[];
+  activeApplyRunId?: string | null;
   onApplyItemToEditor: (item: BatchGenerationTaskItem) => void;
 }) {
   const [visibleCount, setVisibleCount] = useState(ITEMS_PAGE_SIZE);
   const sentinelRef = useRef<HTMLDivElement>(null);
+  const appliedSet = useMemo(() => new Set(props.appliedRunIds), [props.appliedRunIds]);
 
   // Reset visible count when items change significantly
   useEffect(() => {
@@ -124,14 +127,23 @@ function BatchItemsList(props: {
               </div>
               <div className="flex items-center gap-2">
                 {item.status === "succeeded" && item.chapter_id && item.generation_run_id ? (
-                  <button
-                    className="btn btn-secondary"
-                    onClick={() => props.onApplyItemToEditor(item)}
-                    disabled={props.batchLoading || props.batchApplying}
-                    type="button"
-                  >
-                    应用到编辑器
-                  </button>
+                  (() => {
+                    const isApplied = appliedSet.has(item.generation_run_id);
+                    const isApplying =
+                      Boolean(props.activeApplyRunId) && item.generation_run_id === props.activeApplyRunId;
+                    const label = isApplied ? "已应用" : isApplying ? "应用中..." : "应用到编辑器";
+                    const disabled = props.batchLoading || props.batchApplying || isApplied || isApplying;
+                    return (
+                      <button
+                        className="btn btn-secondary"
+                        onClick={() => props.onApplyItemToEditor(item)}
+                        disabled={disabled}
+                        type="button"
+                      >
+                        {label}
+                      </button>
+                    );
+                  })()
                 ) : null}
               </div>
             </div>
@@ -155,6 +167,8 @@ export function BatchGenerationModal(props: {
   batchItems: BatchGenerationTaskItem[];
   batchRuntime: ProjectTaskRuntime | null;
   projectTaskStreamStatus: "idle" | "connecting" | "open" | "error";
+  appliedRunIds: string[];
+  activeApplyRunId?: string | null;
   taskCenterHref?: string | null;
   onClose: () => void;
   onCancelTask: () => void;
@@ -440,6 +454,8 @@ export function BatchGenerationModal(props: {
                 items={props.batchItems}
                 batchLoading={props.batchLoading}
                 batchApplying={props.batchApplying}
+                appliedRunIds={props.appliedRunIds}
+                activeApplyRunId={props.activeApplyRunId}
                 onApplyItemToEditor={props.onApplyItemToEditor}
               />
             </>

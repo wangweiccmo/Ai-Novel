@@ -185,19 +185,6 @@ export function WritingPage() {
     if (!activeChapter) autoGenerateNextRef.current = null;
   }, [activeChapter]);
 
-  useApplyGenerationRun({
-    applyRunId,
-    activeChapter,
-    form,
-    dirty,
-    confirm,
-    toast,
-    saveChapter,
-    searchParams,
-    setSearchParams,
-    setForm,
-  });
-
   const requestSelectChapter = useCallback(
     async (id: string) => {
       autoGenerateNextRef.current = null;
@@ -317,6 +304,20 @@ export function WritingPage() {
     setSearchParams,
     requestSelectChapter,
     toast,
+  });
+
+  useApplyGenerationRun({
+    applyRunId,
+    activeChapter,
+    form,
+    dirty,
+    confirm,
+    toast,
+    saveChapter,
+    searchParams,
+    setSearchParams,
+    setForm,
+    onApplied: batch.markRunApplied,
   });
 
   const analysis = useChapterAnalysis({ activeChapter, preset, genForm, form, setForm, dirty, saveChapter, toast });
@@ -1135,6 +1136,8 @@ export function WritingPage() {
         batchItems={batch.batchItems}
         batchRuntime={batch.batchRuntime}
         projectTaskStreamStatus={batch.projectTaskStreamStatus}
+        appliedRunIds={batch.appliedRunIds}
+        activeApplyRunId={applyRunId}
         taskCenterHref={
           projectId && batch.batchTask?.project_task_id
             ? `/projects/${projectId}/tasks?project_task_id=${encodeURIComponent(batch.batchTask.project_task_id)}`

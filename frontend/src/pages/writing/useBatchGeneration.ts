@@ -59,8 +59,10 @@ export function useBatchGeneration(args: {
   const [batchRuntime, setBatchRuntime] = useState<ProjectTaskRuntime | null>(null);
   const applyRunId = searchParams.get("applyRunId");
   const [batchApplying, setBatchApplying] = useState(false);
+  const [appliedRunIds, setAppliedRunIds] = useState<string[]>([]);
 
   const batchTaskRef = useRef<BatchGenerationTask | null>(null);
+  const lastBatchTaskIdRef = useRef<string | null>(null);
   const batchRefreshGuardRef = useRef(createRequestSeqGuard());
   const runtimeRefreshGuardRef = useRef(createRequestSeqGuard());
   const batchSyncTimerRef = useRef<number | null>(null);
@@ -69,6 +71,14 @@ export function useBatchGeneration(args: {
   useEffect(() => {
     batchTaskRef.current = batchTask;
   }, [batchTask]);
+
+  useEffect(() => {
+    const nextId = batchTask?.id ?? null;
+    if (nextId !== lastBatchTaskIdRef.current) {
+      lastBatchTaskIdRef.current = nextId;
+      setAppliedRunIds([]);
+    }
+  }, [batchTask?.id]);
 
   useEffect(() => {
     const batchRefreshGuard = batchRefreshGuardRef.current;
@@ -147,6 +157,7 @@ export function useBatchGeneration(args: {
   useEffect(() => {
     batchApplyQueueRef.current = [];
     setBatchApplying(false);
+    setAppliedRunIds([]);
     if (!projectId) {
       batchRefreshGuardRef.current.invalidate();
       runtimeRefreshGuardRef.current.invalidate();
@@ -422,7 +433,6 @@ export function useBatchGeneration(args: {
     }
     batchApplyQueueRef.current = queue;
     setBatchApplying(true);
-    setOpen(false);
   }, [applyRunId, batchApplying, buildApplyQueue, toast]);
 
   const applyBatchItemToEditor = useCallback(
@@ -433,7 +443,6 @@ export function useBatchGeneration(args: {
         return;
       }
       if (!item.chapter_id || !item.generation_run_id) return;
-      setOpen(false);
       const ok = await requestSelectChapter(item.chapter_id);
       if (!ok) return;
       const next = new URLSearchParams(searchParams);
@@ -442,6 +451,20 @@ export function useBatchGeneration(args: {
     },
     [applyRunId, batchApplying, requestSelectChapter, searchParams, setSearchParams, toast],
   );
+
+  const markRunApplied = useCallback((runId: string) => {
+    const trimmed = String(runId || "").trim();
+    if (!trimmed) return;
+    setAppliedRunIds((prev) => (prev.includes(trimmed) ? prev : [...prev, trimmed]));
+  }, []);
+
+  useEffect(() => {
+    if (appliedRunIds.length === 0) return;
+    const valid = new Set(
+      batchItems.map((item) => item.generation_run_id).filter((id): id is string => Boolean(id)),
+    );
+    setAppliedRunIds((prev) => prev.filter((id) => valid.has(id)));
+  }, [batchItems, appliedRunIds.length]);
 
   return {
     open,
@@ -456,6 +479,7 @@ export function useBatchGeneration(args: {
     batchItems,
     batchRuntime,
     batchApplying,
+    appliedRunIds,
     projectTaskStreamStatus: projectTaskEvents.status,
     refreshBatchTask,
     startBatchGeneration,
@@ -467,5 +491,6 @@ export function useBatchGeneration(args: {
     hasFailedBatchItems: hasFailedBatchGenerationItems(batchItems),
     applyBatchItemToEditor,
     applyAllToEditor,
+    markRunApplied,
   };
 }

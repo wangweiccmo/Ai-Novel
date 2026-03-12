@@ -242,6 +242,29 @@ def create_batch_generation_task(
                     details={"missing_numbers": missing_numbers},
                 )
 
+    def _raise_integrity_error(exc: IntegrityError) -> None:
+        raw = str(getattr(exc, "orig", exc) or "")
+        if "FOREIGN KEY constraint failed" in raw:
+            raise AppError.conflict(
+                message="批量生成任务创建失败：关联的章节或任务不存在，请刷新后重试",
+                details={"reason": "foreign_key"},
+            )
+        if "uq_chapters_outline_id_number" in raw or "chapters.outline_id, chapters.number" in raw:
+            raise AppError.conflict(
+                message="章节号已存在，请刷新后重试",
+                details={"reason": "chapter_number_conflict"},
+            )
+        if "uq_batch_generation_task_items_task_number" in raw:
+            raise AppError.conflict(
+                message="章节号重复，请刷新后重试",
+                details={"reason": "task_item_conflict"},
+            )
+        raise AppError.conflict(
+            message="批量生成任务创建失败，请重试",
+            details={"reason": "integrity_error"},
+        )
+
+
     task_id = new_id()
     task = BatchGenerationTask(
         id=task_id,
@@ -259,6 +282,16 @@ def create_batch_generation_task(
         checkpoint_json=None,
         error_json=None,
     )
+
+    db.add(task)
+    try:
+        # Flush the task (and any newly created chapters) before inserting items to
+        # avoid FK ordering issues during the later flush.
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        _raise_integrity_error(exc)
+
     items = [
         BatchGenerationTaskItem(
             id=new_id(),
@@ -272,19 +305,18 @@ def create_batch_generation_task(
         for ch in selected
     ]
 
-    db.add(task)
     db.add_all(items)
-    ensure_batch_generation_project_task(
-        db,
-        batch_task=task,
-        chapter_numbers=[int(ch.number) for ch in selected],
-        request_id=request_id,
-    )
     try:
+        ensure_batch_generation_project_task(
+            db,
+            batch_task=task,
+            chapter_numbers=[int(ch.number) for ch in selected],
+            request_id=request_id,
+        )
         db.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.rollback()
-        raise AppError.conflict(message="章节号已存在，请刷新后重试", details={"reason": "chapter_number_conflict"})
+        _raise_integrity_error(exc)
 
     try:
         get_task_queue().enqueue_batch_generation_task(task_id)

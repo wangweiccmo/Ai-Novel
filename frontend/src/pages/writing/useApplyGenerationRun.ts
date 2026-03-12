@@ -20,6 +20,7 @@ export function useApplyGenerationRun(args: {
   searchParams: URLSearchParams;
   setSearchParams: (next: URLSearchParams, opts?: { replace?: boolean }) => void;
   setForm: Dispatch<SetStateAction<ChapterForm | null>>;
+  onApplied?: (runId: string) => void;
 }) {
   const {
     applyRunId,
@@ -32,6 +33,7 @@ export function useApplyGenerationRun(args: {
     searchParams,
     setSearchParams,
     setForm,
+    onApplied,
   } = args;
 
   useEffect(() => {
@@ -88,6 +90,7 @@ export function useApplyGenerationRun(args: {
           prev ? { ...prev, content_md: nextContent, summary: nextSummary || prev.summary, status: "drafting" } : prev,
         );
         toast.toastSuccess("已应用生成结果（别忘了保存）", res.request_id);
+        onApplied?.(applyRunId);
       } catch (e) {
         const err = e as ApiError;
         toast.toastError(`${err.message} (${err.code})`, err.requestId);
@@ -102,5 +105,5 @@ export function useApplyGenerationRun(args: {
     return () => {
       canceled = true;
     };
-  }, [activeChapter, applyRunId, confirm, dirty, form, saveChapter, searchParams, setForm, setSearchParams, toast]);
+  }, [activeChapter, applyRunId, confirm, dirty, form, onApplied, saveChapter, searchParams, setForm, setSearchParams, toast]);
 }

@@ -664,7 +664,7 @@ export function LlmPresetPanel(props: Props) {
                       onChange={(e) => props.onTaskProfileChange(task.task_key, e.target.value || null)}
                       disabled={taskUiLocked}
                     >
-                      <option value="">（回退主配置）</option>
+                      <option value="">使用默认主配置</option>
                       {props.profiles.map((profile) => (
                         <option key={`${task.task_key}-${profile.id}`} value={profile.id}>
                           {profile.name} · {profile.provider}/{profile.model}
