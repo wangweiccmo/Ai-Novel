@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 revision = "a1b2c3d4e5f6"
-down_revision = "f89622011fdb"
+down_revision = "c4a2b7e91d13"
 branch_labels = None
 depends_on = None
 

@@ -21,7 +21,17 @@
       "Bash(find /c/AI/w/Ai-Novel/frontend/src -name *Generate* -o -name *generate*)",
       "Bash(npx tsc:*)",
       "Bash(npx --no tsc --noEmit --pretty false src/components/writing/AiGenerateDrawer.tsx)",
-      "Bash(python3 -c \":*)"
+      "Bash(python3 -c \":*)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8000/api/health)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8000/api/auth/user)",
+      "Bash(netstat -ano)",
+      "Bash(ls -la /c/AI/w/Ai-Novel/backend/ainovel.db*)",
+      "Bash(grep -r \"revision\\\\|down_revision\" alembic/versions/*.py)",
+      "Bash(.venv/Scripts/python.exe -m alembic heads)",
+      "Bash(.venv/Scripts/python.exe -m alembic upgrade head)",
+      "Bash(.venv/Scripts/python.exe -c \":*)",
+      "Bash(timeout 15 .venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1)",
+      "Bash(timeout 10 .venv/Scripts/python.exe -c \":*)"
     ]
   }
 }
