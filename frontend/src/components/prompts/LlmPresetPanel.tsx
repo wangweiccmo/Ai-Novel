@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 
 import type { LLMProfile, LLMProvider, LLMTaskCatalogItem } from "../../types";
@@ -55,6 +55,7 @@ type Props = {
   onClearApiKey: () => void;
 
   taskModules: TaskModuleView[];
+  taskCatalog: LLMTaskCatalogItem[];
   addableTasks: LLMTaskCatalogItem[];
   selectedAddTaskKey: string;
   onSelectAddTaskKey: (taskKey: string) => void;
@@ -89,6 +90,7 @@ type ModuleEditorProps = {
   } | null;
   modelList: LlmModelListState;
   headerActions: ReactNode;
+  hideAdvanced?: boolean;
 };
 
 function getJsonParseErrorPosition(message: string): number | null {
@@ -157,14 +159,6 @@ function formatRecommendedLabel(task: {
   const model = String(task.recommended_model || "").trim();
   if (!provider && !model) return null;
   return [provider, model].filter(Boolean).join(" / ");
-}
-
-function formatRecommendedCompact(task: LLMTaskCatalogItem): string | null {
-  const provider = String(task.recommended_provider || "").trim();
-  const model = String(task.recommended_model || "").trim();
-  if (!provider && !model) return null;
-  if (provider && model) return `${provider}/${model}`;
-  return provider || model;
 }
 
 function maxTokensHint(
@@ -292,7 +286,7 @@ function ModuleEditor(props: ModuleEditorProps) {
         </label>
       </div>
 
-      <details className="mt-4 rounded-atelier border border-border/60 bg-canvas px-4 py-3" open={props.dirty}>
+      <details className="mt-4 rounded-atelier border border-border/60 bg-canvas px-4 py-3" open={props.dirty} hidden={props.hideAdvanced}>
         <summary className="cursor-pointer select-none text-sm font-medium text-ink">高级参数与推理配置</summary>
         <div className="mt-3 grid gap-4 md:grid-cols-3">
           <label className="grid gap-1">
@@ -475,10 +469,57 @@ function ModuleEditor(props: ModuleEditorProps) {
 }
 
 export function LlmPresetPanel(props: Props) {
+  const [advancedMode, setAdvancedMode] = useState(() => {
+    try { return localStorage.getItem("llm_panel_advanced") === "1"; } catch { return false; }
+  });
+  const toggleAdvancedMode = useCallback(() => {
+    setAdvancedMode((prev) => {
+      const next = !prev;
+      try { localStorage.setItem("llm_panel_advanced", next ? "1" : "0"); } catch { /* noop */ }
+      return next;
+    });
+  }, []);
+
   const selectedProfile = props.selectedProfileId
     ? (props.profiles.find((p) => p.id === props.selectedProfileId) ?? null)
     : null;
   const testDisabledReason = (props.testConnectionDisabledReason ?? "").trim();
+
+  const TASK_GROUP_ORDER = ["writing", "planning", "analysis", "memory"];
+  const TASK_GROUP_LABELS: Record<string, string> = {
+    writing: "写作流程",
+    planning: "规划",
+    analysis: "分析",
+    memory: "记忆后台",
+  };
+
+  const taskModuleMap = useMemo(() => {
+    const map = new Map<string, TaskModuleView>();
+    for (const tm of props.taskModules) map.set(tm.task_key, tm);
+    return map;
+  }, [props.taskModules]);
+
+  const groupedCatalog = useMemo(() => {
+    const groups: { key: string; label: string; items: LLMTaskCatalogItem[]; overriddenCount: number }[] = [];
+    const byGroup = new Map<string, LLMTaskCatalogItem[]>();
+    for (const item of props.taskCatalog) {
+      const g = item.group || "other";
+      if (!byGroup.has(g)) byGroup.set(g, []);
+      byGroup.get(g)!.push(item);
+    }
+    for (const gKey of TASK_GROUP_ORDER) {
+      const items = byGroup.get(gKey);
+      if (!items) continue;
+      byGroup.delete(gKey);
+      const overriddenCount = items.filter((i) => taskModuleMap.has(i.key)).length;
+      groups.push({ key: gKey, label: TASK_GROUP_LABELS[gKey] ?? gKey, items, overriddenCount });
+    }
+    for (const [gKey, items] of byGroup) {
+      const overriddenCount = items.filter((i) => taskModuleMap.has(i.key)).length;
+      groups.push({ key: gKey, label: TASK_GROUP_LABELS[gKey] ?? gKey, items, overriddenCount });
+    }
+    return groups;
+  }, [props.taskCatalog, taskModuleMap]);
 
   return (
     <section className="panel p-6">
@@ -489,6 +530,13 @@ export function LlmPresetPanel(props: Props) {
             主模型负责默认调用；任务模块可覆盖特定流程（未覆盖则自动回退主模型）。
           </div>
         </div>
+        <button
+          className="btn btn-secondary btn-sm"
+          onClick={toggleAdvancedMode}
+          type="button"
+        >
+          {advancedMode ? "切换到简单模式" : "切换到高级模式"}
+        </button>
       </div>
 
       <div className="mt-4">
@@ -503,6 +551,7 @@ export function LlmPresetPanel(props: Props) {
           dirty={props.presetDirty}
           capabilities={props.capabilities}
           modelList={props.mainModelList}
+          hideAdvanced={!advancedMode}
           headerActions={
             <>
               <button
@@ -535,330 +584,214 @@ export function LlmPresetPanel(props: Props) {
         {testDisabledReason ? <div className="mt-2 text-[11px] text-warning">{testDisabledReason}</div> : null}
       </div>
 
-      <div className="mt-6 rounded-atelier border border-border/70 bg-canvas p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="grid gap-1">
-            <div className="text-sm font-semibold text-ink">任务模块覆盖</div>
-            <div className="text-xs text-subtext">
-              按流程拆分模型。每个模块都可绑定独立 API 配置库，未绑定则回退项目主配置。
+      {!advancedMode && (
+        <div className="mt-4 rounded-atelier border border-dashed border-border/50 p-3 text-xs text-subtext">
+          简单模式：仅显示核心参数。切换到高级模式可管理任务模块覆盖和推理参数。
+        </div>
+      )}
+
+      <details className="mt-4 rounded-atelier border border-border/50 bg-canvas">
+        <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-ink hover:bg-surface/50">
+          API 配置库 &amp; Key 管理
+          {selectedProfile ? (
+            <span className="ml-2 text-xs text-subtext">当前：{selectedProfile.name}</span>
+          ) : (
+            <span className="ml-2 text-xs text-subtext">（未绑定）</span>
+          )}
+        </summary>
+        <div className="px-4 pb-4">
+          <div className="grid gap-3 sm:grid-cols-3">
+            <label className="grid gap-1 sm:col-span-2">
+              <span className="text-xs text-subtext">选择主配置</span>
+              <select className="select" name="profile_select" value={props.selectedProfileId ?? ""} disabled={props.profileBusy} onChange={(e) => props.onSelectProfile(e.target.value ? e.target.value : null)}>
+                <option value="">（未绑定后端配置）</option>
+                {props.profiles.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} · {p.provider}/{p.model}</option>
+                ))}
+              </select>
+            </label>
+            <label className="grid gap-1 sm:col-span-1">
+              <span className="text-xs text-subtext">新建配置名</span>
+              <input className="input" disabled={props.profileBusy} name="profile_name" value={props.profileName} onChange={(e) => props.onChangeProfileName(e.target.value)} placeholder="例如：主网关" />
+            </label>
+          </div>
+          {selectedProfile ? (
+            <div className="mt-3 text-xs text-subtext">当前主配置：{selectedProfile.name}（{selectedProfile.provider}/{selectedProfile.model}）</div>
+          ) : (
+            <div className="mt-3 text-xs text-subtext">当前主配置：未绑定。任务模块若也未绑定配置库，将无法调用模型。</div>
+          )}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button className="btn btn-secondary px-3 py-2 text-xs" disabled={props.profileBusy} onClick={props.onCreateProfile} type="button">保存为新配置</button>
+            <button className="btn btn-secondary px-3 py-2 text-xs" disabled={props.profileBusy || !props.selectedProfileId} onClick={props.onUpdateProfile} type="button">更新当前配置</button>
+            <button className="btn btn-ghost px-3 py-2 text-xs text-accent hover:bg-accent/10" disabled={props.profileBusy || !props.selectedProfileId} onClick={props.onDeleteProfile} type="button">删除当前配置</button>
+          </div>
+          <div className="mt-4 border-t border-border/50 pt-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="text-sm text-ink">API Key（后端加密）</div>
+              <button className="btn btn-secondary px-3 py-2 text-xs" disabled={!props.selectedProfileId || props.profileBusy || !selectedProfile?.has_api_key} onClick={props.onClearApiKey} type="button">清除 Key</button>
+            </div>
+            <div className="mt-2 text-xs text-subtext">
+              {selectedProfile
+                ? selectedProfile.has_api_key
+                  ? `已保存：${selectedProfile.masked_api_key ?? "（已保存）"}`
+                  : "未保存：请在下方输入并保存"
+                : "请先选择/新建一个后端配置再保存 Key"}
+            </div>
+            <div className="mt-2 flex gap-2">
+              <input className="input flex-1" placeholder="输入新 Key（不会回显已保存 Key）" name="api_key" type="password" value={props.apiKey} onChange={(e) => props.onChangeApiKey(e.target.value)} />
+              <button className="btn btn-primary" disabled={!props.selectedProfileId || props.profileBusy || !props.apiKey.trim()} onClick={props.onSaveApiKey} type="button">保存 Key</button>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              className="select min-w-[240px]"
-              value={props.selectedAddTaskKey}
-              onChange={(e) => props.onSelectAddTaskKey(e.target.value)}
-              disabled={props.addableTasks.length === 0 || props.profileBusy}
-            >
-              <option value="">选择要新增的任务模块</option>
-              {props.addableTasks.map((task) => (
-                <option key={task.key} value={task.key}>
-                  {(() => {
-                    const parts = [`[${task.group}] ${task.label}`];
-                    const recommend = formatRecommendedCompact(task);
-                    if (recommend) parts.push(`推荐 ${recommend}`);
-                    const costLabel = getCostTierMeta(task.cost_tier)?.label;
-                    if (costLabel) parts.push(costLabel);
-                    return parts.join(" · ");
-                  })()}
-                </option>
-              ))}
-            </select>
-            <button
-              className="btn btn-primary"
-              disabled={!props.selectedAddTaskKey || props.profileBusy}
-              onClick={props.onAddTaskModule}
-              type="button"
-            >
-              新增模块
-            </button>
+        </div>
+      </details>
+
+      {advancedMode && (
+      <div className="mt-6 rounded-atelier border border-border/70 bg-canvas p-4">
+        <div className="grid gap-1">
+          <div className="text-sm font-semibold text-ink">任务模块覆盖</div>
+          <div className="text-xs text-subtext">
+            按流程拆分模型。每个模块都可绑定独立 API 配置库，未绑定则回退项目主配置。
           </div>
         </div>
 
-        {props.taskModules.length === 0 ? (
+        {groupedCatalog.length === 0 ? (
           <div className="mt-4 rounded-atelier border border-dashed border-border p-4 text-xs text-subtext">
-            暂无任务级覆盖。当前所有流程都使用主模块。
+            暂无任务目录。
           </div>
         ) : (
-          <div className="mt-4 grid gap-4">
-            {props.taskModules.map((task) => {
-              const boundProfile = task.llm_profile_id
-                ? (props.profiles.find((p) => p.id === task.llm_profile_id) ?? null)
-                : null;
-              const effectiveProfile = boundProfile ?? (!task.llm_profile_id ? selectedProfile : null);
-              const profileMismatch = Boolean(boundProfile && boundProfile.provider !== task.form.provider);
-              const fallbackProfileMismatch = Boolean(
-                !boundProfile && selectedProfile && selectedProfile.provider !== task.form.provider,
-              );
-              const testing = Boolean(props.taskTesting[task.task_key]);
-              const profileBusy = Boolean(props.taskProfileBusy[task.task_key]);
-              const taskBusy = task.saving || task.deleting || profileBusy;
-              const taskUiLocked = taskBusy || testing;
+          <div className="mt-4 grid gap-3">
+            {groupedCatalog.map((group) => {
+              const hasOverrides = group.overriddenCount > 0;
               return (
-                <div className="rounded-atelier border border-border/70 bg-canvas p-3" key={task.task_key}>
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                    <div className="grid gap-1">
-                      <div className="text-sm font-semibold text-ink">
-                        [{task.group}] {task.label}
-                      </div>
-                      <div className="text-xs text-subtext">{task.description}</div>
-                      {(() => {
-                        const costMeta = getCostTierMeta(task.cost_tier);
-                        const recommendLabel = formatRecommendedLabel(task);
-                        const note = String(task.recommended_note || "").trim();
-                        if (!costMeta && !recommendLabel && !note) return null;
+                <details key={group.key} className="rounded-atelier border border-border/50" open={group.key === "writing" || hasOverrides}>
+                  <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium text-ink hover:bg-surface/50">
+                    {group.label}
+                    <span className="ml-2 text-xs text-subtext">
+                      {group.items.length} 个任务，{group.overriddenCount} 个已覆盖
+                    </span>
+                  </summary>
+                  <div className="grid gap-2 px-3 pb-3">
+                    {group.items.map((catalogItem) => {
+                      const task = taskModuleMap.get(catalogItem.key);
+                      if (!task) {
                         return (
-                          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-subtext">
-                            {costMeta ? <Badge tone={costMeta.tone}>{costMeta.label}</Badge> : null}
-                            {recommendLabel ? <Badge tone="accent">推荐 {recommendLabel}</Badge> : null}
-                            {note ? <span>{note}</span> : null}
+                          <div key={catalogItem.key} className="flex items-center justify-between rounded-atelier border border-dashed border-border/50 px-3 py-2">
+                            <div className="grid gap-0.5">
+                              <span className="text-sm text-subtext">{catalogItem.label}</span>
+                              <span className="text-[11px] text-subtext">← 使用主模型 · {catalogItem.description}</span>
+                            </div>
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              disabled={props.profileBusy}
+                              onClick={() => {
+                                props.onSelectAddTaskKey(catalogItem.key);
+                                setTimeout(() => props.onAddTaskModule(), 0);
+                              }}
+                              type="button"
+                            >
+                              添加覆盖
+                            </button>
                           </div>
                         );
-                      })()}
-                      <div className="text-[11px] text-subtext">任务键：{task.task_key}</div>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      {task.dirty ? (
-                        <span className="rounded-full bg-warning/15 px-2 py-0.5 text-[11px] text-warning">未保存</span>
-                      ) : null}
-                      <button
-                        className="btn btn-secondary btn-sm"
-                        disabled={task.modelList.loading || taskUiLocked}
-                        onClick={() => props.onReloadTaskModels(task.task_key)}
-                        type="button"
-                      >
-                        {task.modelList.loading ? "拉取中..." : "模型列表"}
-                      </button>
-                      <button
-                        className="btn btn-secondary btn-sm"
-                        disabled={taskUiLocked || props.profileBusy}
-                        onClick={() => props.onTestTaskConnection(task.task_key)}
-                        type="button"
-                      >
-                        {testing ? "测试中..." : "测试连接"}
-                      </button>
-                      <button
-                        className="btn btn-primary btn-sm"
-                        disabled={!task.dirty || taskUiLocked}
-                        onClick={() => props.onSaveTask(task.task_key)}
-                        type="button"
-                      >
-                        {task.saving ? "保存中..." : "保存模块"}
-                      </button>
-                      <button
-                        className="btn btn-ghost btn-sm text-accent hover:bg-accent/10"
-                        disabled={taskUiLocked}
-                        onClick={() => props.onDeleteTask(task.task_key)}
-                        type="button"
-                      >
-                        {task.deleting ? "删除中..." : "删除模块"}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="mb-3 grid gap-1">
-                    <span className="text-xs text-subtext">任务模块绑定的 API 配置库</span>
-                    <select
-                      className="select"
-                      value={task.llm_profile_id ?? ""}
-                      onChange={(e) => props.onTaskProfileChange(task.task_key, e.target.value || null)}
-                      disabled={taskUiLocked}
-                    >
-                      <option value="">使用默认主配置</option>
-                      {props.profiles.map((profile) => (
-                        <option key={`${task.task_key}-${profile.id}`} value={profile.id}>
-                          {profile.name} · {profile.provider}/{profile.model}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="text-[11px] text-subtext">
-                      选择后该任务优先使用该配置库的 API Key。留空表示继承项目主配置绑定的 API Key。
-                    </div>
-                    {profileMismatch ? (
-                      <div className="text-[11px] text-warning">
-                        所选配置库 provider 与当前模块 provider 不一致，保存会失败。
-                      </div>
-                    ) : null}
-                    {fallbackProfileMismatch ? (
-                      <div className="text-[11px] text-warning">
-                        当前未绑定任务配置，回退主配置 provider 与模块 provider 不一致，测试连接会失败。
-                      </div>
-                    ) : null}
-                    {effectiveProfile ? (
-                      <>
-                        <div className="text-[11px] text-subtext">
-                          当前生效配置：{effectiveProfile.name}（{effectiveProfile.provider}/{effectiveProfile.model}）
-                          {!boundProfile ? "，来源：主配置回退" : "，来源：任务绑定配置"}
-                          {effectiveProfile.has_api_key
-                            ? `，已保存 Key：${effectiveProfile.masked_api_key ?? "（已保存）"}`
-                            : "，尚未保存 Key"}
-                        </div>
-                        <div className="mt-1 flex flex-wrap gap-2">
-                          <input
-                            className="input flex-1 min-w-[220px]"
-                            disabled={taskUiLocked}
-                            placeholder={
-                              boundProfile
-                                ? "输入该任务绑定配置库的新 Key（共享给复用该配置库的模块）"
-                                : "输入主配置的新 Key（将影响回退到主配置的任务）"
-                            }
-                            type="password"
-                            value={props.taskApiKeyDrafts[task.task_key] ?? ""}
-                            onChange={(e) => props.onTaskApiKeyDraftChange(task.task_key, e.target.value)}
+                      }
+                      const boundProfile = task.llm_profile_id
+                        ? (props.profiles.find((p) => p.id === task.llm_profile_id) ?? null)
+                        : null;
+                      const effectiveProfile = boundProfile ?? (!task.llm_profile_id ? selectedProfile : null);
+                      const profileMismatch = Boolean(boundProfile && boundProfile.provider !== task.form.provider);
+                      const fallbackProfileMismatch = Boolean(
+                        !boundProfile && selectedProfile && selectedProfile.provider !== task.form.provider,
+                      );
+                      const testing = Boolean(props.taskTesting[task.task_key]);
+                      const profileBusy = Boolean(props.taskProfileBusy[task.task_key]);
+                      const taskBusy = task.saving || task.deleting || profileBusy;
+                      const taskUiLocked = taskBusy || testing;
+                      const costMeta = getCostTierMeta(task.cost_tier);
+                      const recommendLabel = formatRecommendedLabel(task);
+                      const note = String(task.recommended_note || "").trim();
+                      return (
+                        <div className="rounded-atelier border border-accent/30 bg-accent/5 p-3" key={task.task_key}>
+                          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                            <div className="grid gap-1">
+                              <div className="text-sm font-semibold text-ink">{task.label}</div>
+                              <div className="text-xs text-subtext">{task.description}</div>
+                              {(costMeta || recommendLabel || note) && (
+                                <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-subtext">
+                                  {costMeta ? <Badge tone={costMeta.tone}>{costMeta.label}</Badge> : null}
+                                  {recommendLabel ? <Badge tone="accent">推荐 {recommendLabel}</Badge> : null}
+                                  {note ? <span>{note}</span> : null}
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              {task.dirty && (
+                                <span className="rounded-full bg-warning/15 px-2 py-0.5 text-[11px] text-warning">未保存</span>
+                              )}
+                              <button className="btn btn-secondary btn-sm" disabled={task.modelList.loading || taskUiLocked} onClick={() => props.onReloadTaskModels(task.task_key)} type="button">
+                                {task.modelList.loading ? "拉取中..." : "模型列表"}
+                              </button>
+                              <button className="btn btn-secondary btn-sm" disabled={taskUiLocked || props.profileBusy} onClick={() => props.onTestTaskConnection(task.task_key)} type="button">
+                                {testing ? "测试中..." : "测试连接"}
+                              </button>
+                              <button className="btn btn-primary btn-sm" disabled={!task.dirty || taskUiLocked} onClick={() => props.onSaveTask(task.task_key)} type="button">
+                                {task.saving ? "保存中..." : "保存模块"}
+                              </button>
+                              <button className="btn btn-ghost btn-sm text-accent hover:bg-accent/10" disabled={taskUiLocked} onClick={() => props.onDeleteTask(task.task_key)} type="button">
+                                {task.deleting ? "删除中..." : "删除覆盖"}
+                              </button>
+                            </div>
+                          </div>
+                          <div className="mb-3 grid gap-1">
+                            <span className="text-xs text-subtext">任务模块绑定的 API 配置库</span>
+                            <select className="select" value={task.llm_profile_id ?? ""} onChange={(e) => props.onTaskProfileChange(task.task_key, e.target.value || null)} disabled={taskUiLocked}>
+                              <option value="">使用默认主配置</option>
+                              {props.profiles.map((profile) => (
+                                <option key={`${task.task_key}-${profile.id}`} value={profile.id}>{profile.name} · {profile.provider}/{profile.model}</option>
+                              ))}
+                            </select>
+                            <div className="text-[11px] text-subtext">选择后该任务优先使用该配置库的 API Key。留空表示继承项目主配置绑定的 API Key。</div>
+                            {profileMismatch && <div className="text-[11px] text-warning">所选配置库 provider 与当前模块 provider 不一致，保存会失败。</div>}
+                            {fallbackProfileMismatch && <div className="text-[11px] text-warning">当前未绑定任务配置，回退主配置 provider 与模块 provider 不一致，测试连接会失败。</div>}
+                            {effectiveProfile ? (
+                              <>
+                                <div className="text-[11px] text-subtext">
+                                  当前生效配置：{effectiveProfile.name}（{effectiveProfile.provider}/{effectiveProfile.model}）
+                                  {!boundProfile ? "，来源：主配置回退" : "，来源：任务绑定配置"}
+                                  {effectiveProfile.has_api_key ? `，已保存 Key：${effectiveProfile.masked_api_key ?? "（已保存）"}` : "，尚未保存 Key"}
+                                </div>
+                                <div className="mt-1 flex flex-wrap gap-2">
+                                  <input className="input flex-1 min-w-[220px]" disabled={taskUiLocked} placeholder={boundProfile ? "输入该任务绑定配置库的新 Key" : "输入主配置的新 Key"} type="password" value={props.taskApiKeyDrafts[task.task_key] ?? ""} onChange={(e) => props.onTaskApiKeyDraftChange(task.task_key, e.target.value)} />
+                                  <button className="btn btn-primary btn-sm" disabled={taskUiLocked || !(props.taskApiKeyDrafts[task.task_key] ?? "").trim()} onClick={() => props.onSaveTaskApiKey(task.task_key)} type="button">保存 Key</button>
+                                  <button className="btn btn-secondary btn-sm" disabled={taskUiLocked || !effectiveProfile.has_api_key} onClick={() => props.onClearTaskApiKey(task.task_key)} type="button">清除 Key</button>
+                                </div>
+                              </>
+                            ) : (
+                              <div className="text-[11px] text-subtext">当前未绑定任务配置且项目主配置为空，请先绑定配置库或设置主配置。</div>
+                            )}
+                          </div>
+                          <ModuleEditor
+                            moduleId={`task-${task.task_key}`}
+                            title="模块参数"
+                            subtitle="该任务专属模型参数。"
+                            form={task.form}
+                            setForm={(updater) => props.onTaskFormChange(task.task_key, updater)}
+                            saving={taskUiLocked}
+                            dirty={task.dirty}
+                            capabilities={null}
+                            modelList={task.modelList}
+                            headerActions={<></>}
                           />
-                          <button
-                            className="btn btn-primary btn-sm"
-                            disabled={taskUiLocked || !(props.taskApiKeyDrafts[task.task_key] ?? "").trim()}
-                            onClick={() => props.onSaveTaskApiKey(task.task_key)}
-                            type="button"
-                          >
-                            保存 Key
-                          </button>
-                          <button
-                            className="btn btn-secondary btn-sm"
-                            disabled={taskUiLocked || !effectiveProfile.has_api_key}
-                            onClick={() => props.onClearTaskApiKey(task.task_key)}
-                            type="button"
-                          >
-                            清除 Key
-                          </button>
                         </div>
-                      </>
-                    ) : (
-                      <div className="text-[11px] text-subtext">
-                        当前未绑定任务配置且项目主配置为空，请先绑定配置库或设置主配置。
-                      </div>
-                    )}
+                      );
+                    })}
                   </div>
-
-                  <ModuleEditor
-                    moduleId={`task-${task.task_key}`}
-                    title="模块参数"
-                    subtitle="该任务专属模型参数。"
-                    form={task.form}
-                    setForm={(updater) => props.onTaskFormChange(task.task_key, updater)}
-                    saving={taskUiLocked}
-                    dirty={task.dirty}
-                    capabilities={null}
-                    modelList={task.modelList}
-                    headerActions={<></>}
-                  />
-                </div>
+                </details>
               );
             })}
           </div>
         )}
       </div>
-
-      <div className="surface mt-6 p-4">
-        <div className="text-sm text-ink">API 配置库（后端持久化）</div>
-        <div className="mt-2 grid gap-3 sm:grid-cols-3">
-          <label className="grid gap-1 sm:col-span-2">
-            <span className="text-xs text-subtext">选择主配置</span>
-            <select
-              className="select"
-              name="profile_select"
-              value={props.selectedProfileId ?? ""}
-              disabled={props.profileBusy}
-              onChange={(e) => props.onSelectProfile(e.target.value ? e.target.value : null)}
-            >
-              <option value="">（未绑定后端配置）</option>
-              {props.profiles.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} · {p.provider}/{p.model}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="grid gap-1 sm:col-span-1">
-            <span className="text-xs text-subtext">新建配置名</span>
-            <input
-              className="input"
-              disabled={props.profileBusy}
-              name="profile_name"
-              value={props.profileName}
-              onChange={(e) => props.onChangeProfileName(e.target.value)}
-              placeholder="例如：主网关"
-            />
-          </label>
-        </div>
-
-        {selectedProfile ? (
-          <div className="mt-3 text-xs text-subtext">
-            当前主配置：{selectedProfile.name}（{selectedProfile.provider}/{selectedProfile.model}）
-          </div>
-        ) : (
-          <div className="mt-3 text-xs text-subtext">
-            当前主配置：未绑定。任务模块若也未绑定配置库，将无法调用模型。
-          </div>
-        )}
-
-        <div className="mt-3 flex flex-wrap gap-2">
-          <button
-            className="btn btn-secondary px-3 py-2 text-xs"
-            disabled={props.profileBusy}
-            onClick={props.onCreateProfile}
-            type="button"
-          >
-            保存为新配置
-          </button>
-          <button
-            className="btn btn-secondary px-3 py-2 text-xs"
-            disabled={props.profileBusy || !props.selectedProfileId}
-            onClick={props.onUpdateProfile}
-            type="button"
-          >
-            更新当前配置
-          </button>
-          <button
-            className="btn btn-ghost px-3 py-2 text-xs text-accent hover:bg-accent/10"
-            disabled={props.profileBusy || !props.selectedProfileId}
-            onClick={props.onDeleteProfile}
-            type="button"
-          >
-            删除当前配置
-          </button>
-        </div>
-      </div>
-
-      <div className="surface mt-4 p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="text-sm text-ink">API Key（后端加密）</div>
-          <button
-            className="btn btn-secondary px-3 py-2 text-xs"
-            disabled={!props.selectedProfileId || props.profileBusy || !selectedProfile?.has_api_key}
-            onClick={props.onClearApiKey}
-            type="button"
-          >
-            清除 Key
-          </button>
-        </div>
-        <div className="mt-2 text-xs text-subtext">
-          {selectedProfile
-            ? selectedProfile.has_api_key
-              ? `已保存：${selectedProfile.masked_api_key ?? "（已保存）"}`
-              : "未保存：请在下方输入并保存"
-            : "请先选择/新建一个后端配置再保存 Key"}
-        </div>
-        <div className="mt-2 flex gap-2">
-          <input
-            className="input flex-1"
-            placeholder="输入新 Key（不会回显已保存 Key）"
-            name="api_key"
-            type="password"
-            value={props.apiKey}
-            onChange={(e) => props.onChangeApiKey(e.target.value)}
-          />
-          <button
-            className="btn btn-primary"
-            disabled={!props.selectedProfileId || props.profileBusy || !props.apiKey.trim()}
-            onClick={props.onSaveApiKey}
-            type="button"
-          >
-            保存 Key
-          </button>
-        </div>
-      </div>
+      )}
     </section>
   );
 }

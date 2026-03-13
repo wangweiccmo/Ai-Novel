@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { WizardNextBar } from "../components/atelier/WizardNextBar";
+import { AutomationPanel, type AutoUpdateForm } from "../components/prompts/AutomationPanel";
 import { LlmPresetPanel } from "../components/prompts/LlmPresetPanel";
+import { PipelineOverview } from "../components/prompts/PipelineOverview";
 import type { LlmForm, LlmModelListState, LlmTaskFormDraft } from "../components/prompts/types";
 import { useConfirm } from "../components/ui/confirm";
 import { RequestIdBadge } from "../components/ui/RequestIdBadge";
@@ -120,12 +122,22 @@ function formatLlmTestApiError(err: ApiError): string {
             : err.message;
 }
 
+type PromptsTab = "models" | "rag" | "automation";
+
+function resolveInitialTab(): PromptsTab {
+  const hash = window.location.hash.replace("#", "").trim();
+  if (hash === "rag" || hash === "rag-config") return "rag";
+  if (hash === "automation") return "automation";
+  return "models";
+}
+
 export function PromptsPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
   const toast = useToast();
   const confirm = useConfirm();
   const outletActive = usePersistentOutletIsActive();
+  const [activeTab, setActiveTab] = useState<PromptsTab>(resolveInitialTab);
   const wizard = useWizardProgress(projectId);
   const refreshWizard = wizard.refresh;
   const bumpWizardLocal = wizard.bumpLocal;
@@ -161,6 +173,24 @@ export function PromptsPage() {
   const [rerankApiKeyClearRequested, setRerankApiKeyClearRequested] = useState(false);
   const [savingVector, setSavingVector] = useState(false);
   const savingVectorRef = useRef(false);
+
+  const [autoUpdateForm, setAutoUpdateForm] = useState<AutoUpdateForm>({
+    auto_update_worldbook_enabled: true,
+    auto_update_characters_enabled: true,
+    auto_update_story_memory_enabled: true,
+    auto_update_graph_enabled: true,
+    auto_update_vector_enabled: true,
+    auto_update_search_enabled: true,
+    auto_update_fractal_enabled: true,
+    auto_update_tables_enabled: true,
+  });
+  const [savingAutoUpdate, setSavingAutoUpdate] = useState(false);
+
+  const [qpEnabled, setQpEnabled] = useState(false);
+  const [qpTags, setQpTags] = useState("");
+  const [qpExclusionRules, setQpExclusionRules] = useState("");
+  const [qpIndexRefEnhance, setQpIndexRefEnhance] = useState(false);
+
   const [embeddingDryRunLoading, setEmbeddingDryRunLoading] = useState(false);
   const [embeddingDryRun, setEmbeddingDryRun] = useState<null | {
     requestId: string;
@@ -260,6 +290,30 @@ export function PromptsPage() {
       setVectorApiKeyClearRequested(false);
       setRerankApiKeyDraft("");
       setRerankApiKeyClearRequested(false);
+
+      setAutoUpdateForm({
+        auto_update_worldbook_enabled: Boolean(settings.auto_update_worldbook_enabled ?? true),
+        auto_update_characters_enabled: Boolean(settings.auto_update_characters_enabled ?? true),
+        auto_update_story_memory_enabled: Boolean(settings.auto_update_story_memory_enabled ?? true),
+        auto_update_graph_enabled: Boolean(settings.auto_update_graph_enabled ?? true),
+        auto_update_vector_enabled: Boolean(settings.auto_update_vector_enabled ?? true),
+        auto_update_search_enabled: Boolean(settings.auto_update_search_enabled ?? true),
+        auto_update_fractal_enabled: Boolean(settings.auto_update_fractal_enabled ?? true),
+        auto_update_tables_enabled: Boolean(settings.auto_update_tables_enabled ?? true),
+      });
+
+      setQpEnabled(Boolean(settings.query_preprocessing_effective?.enabled));
+      setQpTags(
+        Array.isArray(settings.query_preprocessing_effective?.tags)
+          ? settings.query_preprocessing_effective.tags.join("\n")
+          : "",
+      );
+      setQpExclusionRules(
+        Array.isArray(settings.query_preprocessing_effective?.exclusion_rules)
+          ? settings.query_preprocessing_effective.exclusion_rules.join("\n")
+          : "",
+      );
+      setQpIndexRefEnhance(Boolean(settings.query_preprocessing_effective?.index_ref_enhance));
 
       setApiKey("");
       setMainModelList({ ...EMPTY_MODEL_LIST_STATE });
@@ -876,6 +930,37 @@ export function PromptsPage() {
     );
   }, [baselineSettings, vectorForm]);
 
+  const autoUpdateDirty = useMemo(() => {
+    if (!baselineSettings) return false;
+    return (
+      autoUpdateForm.auto_update_worldbook_enabled !== Boolean(baselineSettings.auto_update_worldbook_enabled ?? true) ||
+      autoUpdateForm.auto_update_characters_enabled !== Boolean(baselineSettings.auto_update_characters_enabled ?? true) ||
+      autoUpdateForm.auto_update_story_memory_enabled !== Boolean(baselineSettings.auto_update_story_memory_enabled ?? true) ||
+      autoUpdateForm.auto_update_graph_enabled !== Boolean(baselineSettings.auto_update_graph_enabled ?? true) ||
+      autoUpdateForm.auto_update_vector_enabled !== Boolean(baselineSettings.auto_update_vector_enabled ?? true) ||
+      autoUpdateForm.auto_update_search_enabled !== Boolean(baselineSettings.auto_update_search_enabled ?? true) ||
+      autoUpdateForm.auto_update_fractal_enabled !== Boolean(baselineSettings.auto_update_fractal_enabled ?? true) ||
+      autoUpdateForm.auto_update_tables_enabled !== Boolean(baselineSettings.auto_update_tables_enabled ?? true)
+    );
+  }, [baselineSettings, autoUpdateForm]);
+
+  const qpDirty = useMemo(() => {
+    if (!baselineSettings) return false;
+    const baseline = baselineSettings.query_preprocessing_effective;
+    const baseEnabled = Boolean(baseline?.enabled);
+    const baseTags = Array.isArray(baseline?.tags) ? baseline.tags.join("\n") : "";
+    const baseExclusion = Array.isArray(baseline?.exclusion_rules) ? baseline.exclusion_rules.join("\n") : "";
+    const baseIndexRef = Boolean(baseline?.index_ref_enhance);
+    return (
+      qpEnabled !== baseEnabled ||
+      qpTags !== baseTags ||
+      qpExclusionRules !== baseExclusion ||
+      qpIndexRefEnhance !== baseIndexRef
+    );
+  }, [baselineSettings, qpEnabled, qpTags, qpExclusionRules, qpIndexRefEnhance]);
+
+  const anyDirty = dirty || vectorRagDirty || vectorApiKeyDirty || rerankApiKeyDirty || autoUpdateDirty || qpDirty;
+
   const saveVectorRagConfig = useCallback(async (): Promise<boolean> => {
     if (!projectId) return false;
     if (!baselineSettings) return false;
@@ -994,6 +1079,92 @@ export function PromptsPage() {
     vectorRerankTopKDraft,
     vectorRerankTimeoutDraft,
   ]);
+
+  const saveAutoUpdate = useCallback(async () => {
+    if (!projectId || !baselineSettings || !autoUpdateDirty) return;
+    setSavingAutoUpdate(true);
+    try {
+      const res = await apiJson<{ settings: ProjectSettings }>(`/api/projects/${projectId}/settings`, {
+        method: "PUT",
+        body: JSON.stringify({
+          auto_update_worldbook_enabled: Boolean(autoUpdateForm.auto_update_worldbook_enabled),
+          auto_update_characters_enabled: Boolean(autoUpdateForm.auto_update_characters_enabled),
+          auto_update_story_memory_enabled: Boolean(autoUpdateForm.auto_update_story_memory_enabled),
+          auto_update_graph_enabled: Boolean(autoUpdateForm.auto_update_graph_enabled),
+          auto_update_vector_enabled: Boolean(autoUpdateForm.auto_update_vector_enabled),
+          auto_update_search_enabled: Boolean(autoUpdateForm.auto_update_search_enabled),
+          auto_update_fractal_enabled: Boolean(autoUpdateForm.auto_update_fractal_enabled),
+          auto_update_tables_enabled: Boolean(autoUpdateForm.auto_update_tables_enabled),
+        }),
+      });
+      const settings = res.data.settings;
+      setBaselineSettings(settings);
+      setAutoUpdateForm({
+        auto_update_worldbook_enabled: Boolean(settings.auto_update_worldbook_enabled ?? true),
+        auto_update_characters_enabled: Boolean(settings.auto_update_characters_enabled ?? true),
+        auto_update_story_memory_enabled: Boolean(settings.auto_update_story_memory_enabled ?? true),
+        auto_update_graph_enabled: Boolean(settings.auto_update_graph_enabled ?? true),
+        auto_update_vector_enabled: Boolean(settings.auto_update_vector_enabled ?? true),
+        auto_update_search_enabled: Boolean(settings.auto_update_search_enabled ?? true),
+        auto_update_fractal_enabled: Boolean(settings.auto_update_fractal_enabled ?? true),
+        auto_update_tables_enabled: Boolean(settings.auto_update_tables_enabled ?? true),
+      });
+      toast.toastSuccess("自动化任务配置已保存");
+    } catch (e) {
+      const err = e as ApiError;
+      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+    } finally {
+      setSavingAutoUpdate(false);
+    }
+  }, [autoUpdateDirty, autoUpdateForm, baselineSettings, projectId, toast]);
+
+  const saveQueryPreprocessing = useCallback(async (): Promise<boolean> => {
+    if (!projectId) return false;
+    if (!baselineSettings) return false;
+    if (!qpDirty) return true;
+
+    const tags = qpTags
+      .split(/\r?\n/)
+      .map((v) => v.trim())
+      .filter(Boolean);
+    const exclusionRules = qpExclusionRules
+      .split(/\r?\n/)
+      .map((v) => v.trim())
+      .filter(Boolean);
+
+    if (tags.length > 50) {
+      toast.toastError("tags 最多 50 条");
+      return false;
+    }
+    if (exclusionRules.length > 50) {
+      toast.toastError("exclusion_rules 最多 50 条");
+      return false;
+    }
+
+    setSavingVector(true);
+    try {
+      const res = await apiJson<{ settings: ProjectSettings }>(`/api/projects/${projectId}/settings`, {
+        method: "PUT",
+        body: JSON.stringify({
+          query_preprocessing: {
+            enabled: qpEnabled,
+            tags,
+            exclusion_rules: exclusionRules,
+            index_ref_enhance: qpIndexRefEnhance,
+          },
+        }),
+      });
+      setBaselineSettings(res.data.settings);
+      toast.toastSuccess("查询预处理配置已保存");
+      return true;
+    } catch (e) {
+      const err = e as ApiError;
+      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      return false;
+    } finally {
+      setSavingVector(false);
+    }
+  }, [projectId, baselineSettings, qpDirty, qpEnabled, qpTags, qpExclusionRules, qpIndexRefEnhance, toast]);
 
   const runEmbeddingDryRun = useCallback(async () => {
     if (!projectId) return;
@@ -1655,7 +1826,42 @@ export function PromptsPage() {
 
   return (
     <div className="grid gap-6 pb-24">
-      {dirty && outletActive ? <UnsavedChangesGuard when={dirty} /> : null}
+      {anyDirty && outletActive ? <UnsavedChangesGuard when={anyDirty} /> : null}
+
+      <nav className="flex gap-2" aria-label="模型配置 Tab">
+        <button
+          className={`btn ${activeTab === "models" ? "btn-primary" : "btn-secondary"}`}
+          onClick={() => setActiveTab("models")}
+          type="button"
+        >
+          模型编排{dirty ? " *" : ""}
+        </button>
+        <button
+          className={`btn ${activeTab === "rag" ? "btn-primary" : "btn-secondary"}`}
+          onClick={() => setActiveTab("rag")}
+          type="button"
+        >
+          向量 &amp; RAG{vectorRagDirty || vectorApiKeyDirty || rerankApiKeyDirty || qpDirty ? " *" : ""}
+        </button>
+        <button
+          className={`btn ${activeTab === "automation" ? "btn-primary" : "btn-secondary"}`}
+          onClick={() => setActiveTab("automation")}
+          type="button"
+        >
+          自动化任务{autoUpdateDirty ? " *" : ""}
+        </button>
+      </nav>
+
+      {activeTab === "models" && (
+        <>
+      <PipelineOverview
+        mainModel={llmForm.model.trim() || "（未设置）"}
+        taskModules={taskModules.map((tm) => ({
+          task_key: tm.task_key,
+          model: tm.form.model.trim() || null,
+          overridden: true,
+        }))}
+      />
       <LlmPresetPanel
         llmForm={llmForm}
         setLlmForm={setLlmForm}
@@ -1682,6 +1888,7 @@ export function PromptsPage() {
         onSaveApiKey={() => void saveApiKeyToProfile()}
         onClearApiKey={() => void clearApiKeyInProfile()}
         taskModules={taskModules}
+        taskCatalog={taskCatalog}
         addableTasks={addableTasks}
         selectedAddTaskKey={selectedAddTaskKey}
         onSelectAddTaskKey={setSelectedAddTaskKey}
@@ -1700,6 +1907,28 @@ export function PromptsPage() {
         onReloadTaskModels={reloadTaskModels}
       />
 
+      <div className="surface p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold">提示词工作室（beta）</div>
+            <div className="text-xs text-subtext">提示词仅在「提示词工作室」中编辑/预览（与实际发送一致）。</div>
+          </div>
+          <button
+            className="btn btn-secondary"
+            onClick={() => navigate(`/projects/${projectId}/prompt-studio`)}
+            type="button"
+          >
+            打开提示词工作室
+          </button>
+        </div>
+      </div>
+
+      <div className="text-xs text-subtext">快捷键：Ctrl/Cmd + S 保存（仅保存 LLM 配置）</div>
+        </>
+      )}
+
+      {activeTab === "rag" && (
+      <>
       <section className="panel p-6" id="rag-config" aria-label={UI_COPY.vectorRag.title} role="region">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="grid gap-1">
@@ -2274,31 +2503,99 @@ export function PromptsPage() {
         )}
       </section>
 
-      <div className="surface p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-semibold">提示词工作室（beta）</div>
-            <div className="text-xs text-subtext">提示词仅在「提示词工作室」中编辑/预览（与实际发送一致）。</div>
+        <section className="panel p-6">
+          <div className="grid gap-1">
+            <div className="font-content text-xl text-ink">Query 预处理（Query Preprocessing）</div>
+            <div className="text-xs text-subtext">
+              用于把 query_text 先"标准化/去噪"，让 WorldBook / Vector RAG / Graph 的检索更稳定（默认关闭）。
+            </div>
           </div>
-          <button
-            className="btn btn-secondary"
-            onClick={() => navigate(`/projects/${projectId}/prompt-studio`)}
-            type="button"
-          >
-            打开提示词工作室
-          </button>
-        </div>
-      </div>
 
-      <div className="text-xs text-subtext">快捷键：Ctrl/Cmd + S 保存（仅保存 LLM 配置）</div>
+          <div className="mt-4 grid gap-4">
+            <label className="flex items-center gap-2 text-sm text-ink">
+              <input
+                className="checkbox"
+                checked={qpEnabled}
+                onChange={(e) => setQpEnabled(e.target.checked)}
+                type="checkbox"
+              />
+              启用 query_preprocessing（默认关闭）
+            </label>
+
+            {qpEnabled && (
+              <>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="grid gap-1">
+                    <span className="text-xs text-subtext">tags（每行一条；匹配 #tag；留空=提取所有 tag）</span>
+                    <textarea
+                      className="textarea"
+                      rows={5}
+                      value={qpTags}
+                      onChange={(e) => setQpTags(e.target.value)}
+                      placeholder={"例如：\nfoo\nbar"}
+                    />
+                    <div className="text-[11px] text-subtext">最大 50 条；每条最多 64 字符。</div>
+                  </label>
+
+                  <label className="grid gap-1">
+                    <span className="text-xs text-subtext">exclusion_rules（每行一条；出现则移除）</span>
+                    <textarea
+                      className="textarea"
+                      rows={5}
+                      value={qpExclusionRules}
+                      onChange={(e) => setQpExclusionRules(e.target.value)}
+                      placeholder={"例如：\n忽略这段\nREMOVE"}
+                    />
+                    <div className="text-[11px] text-subtext">最大 50 条；每条最多 256 字符。</div>
+                  </label>
+                </div>
+
+                <label className="flex items-center gap-2 text-sm text-ink">
+                  <input
+                    className="checkbox"
+                    checked={qpIndexRefEnhance}
+                    onChange={(e) => setQpIndexRefEnhance(e.target.checked)}
+                    type="checkbox"
+                  />
+                  index_ref_enhance（识别"第N章 / chapter N"并追加引用 token）
+                </label>
+              </>
+            )}
+
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                className="btn btn-primary"
+                disabled={!qpDirty || savingVector}
+                onClick={() => void saveQueryPreprocessing()}
+                type="button"
+              >
+                {savingVector ? "保存中…" : "保存查询预处理"}
+              </button>
+              {qpDirty && <span className="text-xs text-warning">有未保存的更改</span>}
+            </div>
+          </div>
+        </section>
+      </>
+      )}
+
+      {activeTab === "automation" && (
+        <AutomationPanel
+          form={autoUpdateForm}
+          onChange={setAutoUpdateForm}
+          saving={savingAutoUpdate}
+          dirty={autoUpdateDirty}
+          onSave={() => void saveAutoUpdate()}
+          mainModel={llmForm.model.trim() || "（未设置）"}
+          taskModules={taskModules.map((tm) => ({ task_key: tm.task_key, model: tm.form.model.trim() || null }))}
+        />
+      )}
 
       <WizardNextBar
         projectId={projectId}
         currentStep="llm"
         progress={wizard.progress}
         loading={wizard.loading}
-        dirty={dirty}
-        saving={savingPreset || testing}
+        dirty={anyDirty}        saving={savingPreset || testing}
         onSave={saveAll}
         primaryAction={
           wizard.progress.nextStep?.key === "llm"

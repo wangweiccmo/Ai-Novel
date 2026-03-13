@@ -32,7 +32,9 @@
       "Bash(.venv/Scripts/python.exe -c \":*)",
       "Bash(timeout 15 .venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1)",
       "Bash(timeout 10 .venv/Scripts/python.exe -c \":*)",
-      "Bash(xargs ls:*)"
+      "Bash(xargs ls:*)",
+      "Bash(npx vite:*)",
+      "Bash(grep -E \"\\\\.tsx$\")"
     ]
   }
 }

@@ -17,7 +17,7 @@ export const UI_COPY = {
     groupAdmin: "管理",
 
     wizard: "开工向导",
-    projectSettings: "项目设置",
+    projectSettings: "项目信息",
     characters: "角色卡",
     outline: "大纲",
     writing: "写作",
