@@ -467,6 +467,16 @@ export function PromptsPage() {
     [moduleDrafts],
   );
 
+  const isModuleFormDirty = useCallback(
+    (slot: ModuleSlot) => {
+      const draft = getModuleDraft(slot);
+      const payload = buildPresetPayload(draft.form);
+      if (!payload.ok) return true;
+      return !payloadEquals(payload.payload, payloadFromProfile(slot.profile));
+    },
+    [getModuleDraft],
+  );
+
   const isModuleApiKeyDirty = useCallback(
     (slotId: string) => {
       const draft = (moduleApiKeyDrafts[slotId] ?? "").trim();
@@ -483,11 +493,10 @@ export function PromptsPage() {
       const draft = getModuleDraft(slot);
       if (draft.display_name !== slot.display_name) return true;
       if (isModuleApiKeyDirty(slot.id)) return true;
-      const payload = buildPresetPayload(draft.form);
-      if (!payload.ok) return true;
-      return !payloadEquals(payload.payload, payloadFromProfile(slot.profile));
+      if (isModuleFormDirty(slot)) return true;
+      return false;
     },
-    [getModuleDraft, isModuleApiKeyDirty],
+    [getModuleDraft, isModuleApiKeyDirty, isModuleFormDirty],
   );
 
   const moduleCards = useMemo(
@@ -500,6 +509,7 @@ export function PromptsPage() {
           is_main: slot.is_main,
           profile: slot.profile,
           form: draft.form,
+          formDirty: isModuleFormDirty(slot),
           dirty: isModuleDirty(slot),
           saving: Boolean(moduleSaving[slot.id]),
           testing: Boolean(moduleTesting[slot.id]),
@@ -508,7 +518,7 @@ export function PromptsPage() {
           apiKeyDirty: isModuleApiKeyDirty(slot.id),
         };
       }),
-    [getModuleDraft, isModuleDirty, isModuleApiKeyDirty, moduleApiKeyDrafts, moduleModelLists, moduleSaving, moduleSlots, moduleTesting],
+    [getModuleDraft, isModuleDirty, isModuleApiKeyDirty, isModuleFormDirty, moduleApiKeyDrafts, moduleModelLists, moduleSaving, moduleSlots, moduleTesting],
   );
 
   const taskDirty = useMemo(() => taskModules.some((item) => item.dirty), [taskModules]);

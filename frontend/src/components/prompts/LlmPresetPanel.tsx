@@ -11,6 +11,7 @@ type ModuleCardView = {
   is_main: boolean;
   profile: LLMProfile;
   form: LlmForm;
+  formDirty: boolean;
   dirty: boolean;
   saving: boolean;
   testing: boolean;
@@ -748,7 +749,7 @@ export function LlmPresetPanel(props: Props) {
                 form={module.form}
                 setForm={(updater) => props.onModuleFormChange(module.slot_id, updater)}
                 saving={module.saving}
-                dirty={module.dirty}
+                dirty={module.formDirty}
                 capabilities={moduleCaps}
                 modelList={module.modelList}
                 hideAdvanced={!advancedMode}
@@ -858,7 +859,7 @@ export function LlmPresetPanel(props: Props) {
                                 <span className="text-[11px] text-subtext">→ 使用主模块 · {catalogItem.description}</span>
                               </div>
                               <button className="btn btn-secondary btn-sm" onClick={() => props.onAddTaskModule(catalogItem.key)} type="button">
-                                添加覆盖
+                                修改配置
                               </button>
                             </div>
                           );
