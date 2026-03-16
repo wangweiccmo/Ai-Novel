@@ -467,6 +467,29 @@ export function PromptsPage() {
     [moduleDrafts],
   );
 
+  const moduleModelBySlotId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const slot of moduleSlots) {
+      const draft = getModuleDraft(slot);
+      const model = typeof draft.form.model === "string" ? draft.form.model.trim() : "";
+      map.set(slot.id, model);
+    }
+    return map;
+  }, [getModuleDraft, moduleSlots]);
+
+  const taskModuleInfos = useMemo(
+    () =>
+      taskModules.map((tm) => {
+        const model = tm.module_slot_id ? moduleModelBySlotId.get(tm.module_slot_id) ?? "" : "";
+        return {
+          task_key: tm.task_key,
+          model: model || null,
+          overridden: true,
+        };
+      }),
+    [moduleModelBySlotId, taskModules],
+  );
+
   const isModuleFormDirty = useCallback(
     (slot: ModuleSlot) => {
       const draft = getModuleDraft(slot);
@@ -1198,11 +1221,7 @@ const nextAfterLlm = useMemo(() => {
         <>
           <PipelineOverview
             mainModel={mainForm.model.trim() || "（未设置）"}
-            taskModules={taskModules.map((tm) => ({
-              task_key: tm.task_key,
-              model: tm.form.model.trim() || null,
-              overridden: true,
-            }))}
+            taskModules={taskModuleInfos}
           />
           <LlmPresetPanel
             moduleCards={moduleCards}
@@ -1906,7 +1925,7 @@ const nextAfterLlm = useMemo(() => {
           dirty={autoUpdateDirty}
           onSave={() => void saveAutoUpdate()}
           mainModel={mainForm.model.trim() || "（未设置）"}
-          taskModules={taskModules.map((tm) => ({ task_key: tm.task_key, model: tm.form.model.trim() || null }))}
+          taskModules={taskModuleInfos.map(({ task_key, model }) => ({ task_key, model }))}
         />
       )}
 
