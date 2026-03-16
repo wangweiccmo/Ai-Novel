@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.llm import LLMProvider
+from app.schemas.llm_profiles import LLMProfileOut
 from app.schemas.limits import MAX_JSON_CHARS_SMALL, validate_json_chars
 
 
@@ -19,6 +20,9 @@ class LLMTaskPresetOut(BaseModel):
     project_id: str
     task_key: str
     llm_profile_id: str | None = None
+    module_slot_id: str | None = None
+    module_display_name: str | None = None
+    module_profile: LLMProfileOut | None = None
     provider: LLMProvider
     provider_key: str | None = None
     model_key: str | None = None
@@ -43,10 +47,11 @@ class LLMTaskPresetOut(BaseModel):
 
 
 class LLMTaskPresetPutRequest(BaseModel):
+    module_slot_id: str | None = Field(default=None, max_length=36)
     llm_profile_id: str | None = Field(default=None, max_length=36)
-    provider: LLMProvider
+    provider: LLMProvider | None = None
     base_url: str | None = Field(default=None, max_length=2048)
-    model: str = Field(min_length=1, max_length=255)
+    model: str | None = Field(default=None, max_length=255)
     temperature: float | None = None
     top_p: float | None = None
     max_tokens: int | None = None

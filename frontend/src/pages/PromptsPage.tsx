@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { WizardNextBar } from "../components/atelier/WizardNextBar";
 import { AutomationPanel, type AutoUpdateForm } from "../components/prompts/AutomationPanel";
 import { LlmPresetPanel } from "../components/prompts/LlmPresetPanel";
 import { PipelineOverview } from "../components/prompts/PipelineOverview";
-import type { LlmForm, LlmModelListState, LlmTaskFormDraft } from "../components/prompts/types";
+import type { LlmForm, LlmModelListState, LlmTaskFormDraft, TaskOverrideForm } from "../components/prompts/types";
 import { useConfirm } from "../components/ui/confirm";
 import { RequestIdBadge } from "../components/ui/RequestIdBadge";
 import { useToast } from "../components/ui/toast";
@@ -20,23 +20,26 @@ import { UI_COPY } from "../lib/uiCopy";
 import { ApiError, apiJson } from "../services/apiClient";
 import { markWizardLlmTestOk } from "../services/wizard";
 import type {
-  LLMPreset,
   LLMModelsResponse,
   LLMProfile,
   LLMTaskCatalogItem,
   LLMTaskPreset,
+  ModuleSlot,
   Project,
   ProjectSettings,
 } from "../types";
 import {
   buildPresetPayload,
+  buildTaskOverridePayload,
   DEFAULT_LLM_FORM,
   DEFAULT_VECTOR_RAG_FORM,
   formFromProfile,
-  formFromPreset,
   mapVectorFormFromSettings,
+  overrideFormFromPreset,
+  overridePayloadEquals,
+  overridePayloadFromPreset,
   payloadEquals,
-  payloadFromPreset,
+  payloadFromProfile,
   parseTimeoutSecondsForTest,
   type LlmCapabilities,
   type VectorEmbeddingDryRunResult,
@@ -53,12 +56,11 @@ type TaskModuleView = {
   recommended_model?: LLMTaskCatalogItem["recommended_model"];
   recommended_note?: LLMTaskCatalogItem["recommended_note"];
   cost_tier?: LLMTaskCatalogItem["cost_tier"];
-  llm_profile_id: string | null;
-  form: LlmForm;
+  module_slot_id: string | null;
+  form: TaskOverrideForm;
   dirty: boolean;
   saving: boolean;
   deleting: boolean;
-  modelList: LlmModelListState;
 };
 
 const EMPTY_MODEL_LIST_STATE: LlmModelListState = {
@@ -67,6 +69,18 @@ const EMPTY_MODEL_LIST_STATE: LlmModelListState = {
   warning: null,
   error: null,
   requestId: null,
+};
+
+const EMPTY_TASK_OVERRIDE: TaskOverrideForm = {
+  temperature: "",
+  top_p: "",
+  max_tokens: "",
+  presence_penalty: "",
+  frequency_penalty: "",
+  top_k: "",
+  stop: "",
+  timeout_seconds: "",
+  extra: "{}",
 };
 
 function formatLlmTestApiError(err: ApiError): string {
@@ -144,22 +158,18 @@ export function PromptsPage() {
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<null | { message: string; code: string; requestId?: string }>(null);
-  const [savingPreset, setSavingPreset] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const savingPresetRef = useRef(false);
-  const queuedPresetSaveRef = useRef<null | { silent: boolean; snapshot?: LlmForm }>(null);
   const wizardRefreshTimerRef = useRef<number | null>(null);
 
   const [project, setProject] = useState<Project | null>(null);
-  const [profiles, setProfiles] = useState<LLMProfile[]>([]);
-  const [profileName, setProfileName] = useState("");
-  const [profileBusy, setProfileBusy] = useState(false);
+  const [moduleSlots, setModuleSlots] = useState<ModuleSlot[]>([]);
+  const [moduleDrafts, setModuleDrafts] = useState<Record<string, { display_name: string; form: LlmForm }>>({});
+  const [moduleSaving, setModuleSaving] = useState<Record<string, boolean>>({});
+  const [moduleTesting, setModuleTesting] = useState<Record<string, boolean>>({});
+  const [moduleModelLists, setModuleModelLists] = useState<Record<string, LlmModelListState>>({});
+  const [moduleApiKeyDrafts, setModuleApiKeyDrafts] = useState<Record<string, string>>({});
 
-  const [baselinePreset, setBaselinePreset] = useState<LLMPreset | null>(null);
   const [capabilities, setCapabilities] = useState<LlmCapabilities | null>(null);
   const capsGuardRef = useRef(createRequestSeqGuard());
-
-  const [apiKey, setApiKey] = useState("");
   const [baselineSettings, setBaselineSettings] = useState<ProjectSettings | null>(null);
   const [vectorForm, setVectorForm] = useState<VectorRagForm>(DEFAULT_VECTOR_RAG_FORM);
   const [vectorRerankTopKDraft, setVectorRerankTopKDraft] = useState(
@@ -211,28 +221,27 @@ export function PromptsPage() {
     requestId?: string;
   }>(null);
 
-  const [llmForm, setLlmForm] = useState<LlmForm>({ ...DEFAULT_LLM_FORM });
-  const [mainModelList, setMainModelList] = useState<LlmModelListState>({ ...EMPTY_MODEL_LIST_STATE });
-
   const [taskCatalog, setTaskCatalog] = useState<LLMTaskCatalogItem[]>([]);
   const [taskBaseline, setTaskBaseline] = useState<Record<string, LLMTaskPreset>>({});
   const [taskDrafts, setTaskDrafts] = useState<Record<string, LlmTaskFormDraft>>({});
-  const [taskModelLists, setTaskModelLists] = useState<Record<string, LlmModelListState>>({});
   const [taskSaving, setTaskSaving] = useState<Record<string, boolean>>({});
   const [taskDeleting, setTaskDeleting] = useState<Record<string, boolean>>({});
-  const [taskTesting, setTaskTesting] = useState<Record<string, boolean>>({});
-  const [taskProfileBusy, setTaskProfileBusy] = useState<Record<string, boolean>>({});
-  const [taskApiKeyDrafts, setTaskApiKeyDrafts] = useState<Record<string, string>>({});
-  const [selectedAddTaskKey, setSelectedAddTaskKey] = useState("");
+
+  const mainSlot = useMemo(() => moduleSlots.find((slot) => slot.is_main) ?? null, [moduleSlots]);
+  const mainSlotId = mainSlot?.id ?? null;
+  const mainDraft = mainSlot ? moduleDrafts[mainSlot.id] ?? null : null;
+  const mainForm = useMemo(
+    () => mainDraft?.form ?? (mainSlot ? formFromProfile(mainSlot.profile) : { ...DEFAULT_LLM_FORM }),
+    [mainDraft, mainSlot],
+  );
 
   const reloadAll = useCallback(async () => {
     if (!projectId) return;
     setLoading(true);
     try {
-      const [presetRes, pRes, profilesRes, settingsRes, taskRes] = await Promise.all([
-        apiJson<{ llm_preset: LLMPreset }>(`/api/projects/${projectId}/llm_preset`),
+      const [modulesRes, pRes, settingsRes, taskRes] = await Promise.all([
+        apiJson<{ modules: ModuleSlot[] }>(`/api/projects/${projectId}/modules`),
         apiJson<{ project: Project }>(`/api/projects/${projectId}`),
-        apiJson<{ profiles: LLMProfile[] }>(`/api/llm_profiles`),
         apiJson<{ settings: ProjectSettings }>(`/api/projects/${projectId}/settings`),
         apiJson<{ catalog: LLMTaskCatalogItem[]; task_presets: LLMTaskPreset[] }>(
           `/api/projects/${projectId}/llm_task_presets`,
@@ -240,18 +249,22 @@ export function PromptsPage() {
       ]);
 
       setProject(pRes.data.project);
-      setProfiles(profilesRes.data.profiles ?? []);
-      setProfileName("");
-
-      setBaselinePreset(presetRes.data.llm_preset);
-      setCapabilities({
-        provider: presetRes.data.llm_preset.provider,
-        model: presetRes.data.llm_preset.model,
-        max_tokens_limit: presetRes.data.llm_preset.max_tokens_limit ?? null,
-        max_tokens_recommended: presetRes.data.llm_preset.max_tokens_recommended ?? null,
-        context_window_limit: presetRes.data.llm_preset.context_window_limit ?? null,
+      const modules = modulesRes.data.modules ?? [];
+      setModuleSlots(modules);
+      setModuleDrafts(() => {
+        const next: Record<string, { display_name: string; form: LlmForm }> = {};
+        for (const slot of modules) {
+          next[slot.id] = {
+            display_name: slot.display_name,
+            form: formFromProfile(slot.profile),
+          };
+        }
+        return next;
       });
-      setLlmForm(formFromPreset(presetRes.data.llm_preset));
+      setModuleSaving({});
+      setModuleTesting({});
+      setModuleModelLists({});
+      setModuleApiKeyDrafts({});
 
       const nextTaskCatalog = taskRes.data.catalog ?? [];
       const nextTaskBaseline: Record<string, LLMTaskPreset> = {};
@@ -262,22 +275,16 @@ export function PromptsPage() {
         nextTaskBaseline[key] = row;
         nextTaskDrafts[key] = {
           task_key: key,
-          llm_profile_id: row.llm_profile_id ?? null,
-          form: formFromPreset(row),
+          module_slot_id: row.module_slot_id ?? null,
+          form: overrideFormFromPreset(row),
           isNew: false,
         };
       }
       setTaskCatalog(nextTaskCatalog);
       setTaskBaseline(nextTaskBaseline);
       setTaskDrafts(nextTaskDrafts);
-      setTaskModelLists({});
       setTaskSaving({});
       setTaskDeleting({});
-      setTaskTesting({});
-      setTaskProfileBusy({});
-      setTaskApiKeyDrafts({});
-      const firstAddable = nextTaskCatalog.find((item) => !nextTaskDrafts[item.key])?.key ?? "";
-      setSelectedAddTaskKey(firstAddable);
 
       const settings = settingsRes.data.settings;
       const mappedVector = mapVectorFormFromSettings(settings);
@@ -315,8 +322,6 @@ export function PromptsPage() {
       );
       setQpIndexRefEnhance(Boolean(settings.query_preprocessing_effective?.index_ref_enhance));
 
-      setApiKey("");
-      setMainModelList({ ...EMPTY_MODEL_LIST_STATE });
       setLoadError(null);
     } catch (e) {
       if (e instanceof ApiError) {
@@ -349,8 +354,8 @@ export function PromptsPage() {
   }, []);
 
   useEffect(() => {
-    const provider = llmForm.provider;
-    const model = llmForm.model.trim();
+    const provider = mainForm.provider;
+    const model = mainForm.model.trim();
     const guard = capsGuardRef.current;
     if (!model) {
       guard.invalidate();
@@ -370,28 +375,18 @@ export function PromptsPage() {
         setCapabilities(null);
       }
     })();
-  }, [llmForm.model, llmForm.provider]);
+  }, [mainForm.model, mainForm.provider]);
 
-  useEffect(() => {
-    setApiKey("");
-  }, [llmForm.provider, project?.llm_profile_id]);
-
-  const currentMainPayload = useMemo(() => buildPresetPayload(llmForm), [llmForm]);
+  const currentMainPayload = useMemo(() => buildPresetPayload(mainForm), [mainForm]);
   const baselineMainPayload = useMemo(
-    () => (baselinePreset ? payloadFromPreset(baselinePreset) : null),
-    [baselinePreset],
+    () => (mainSlot ? payloadFromProfile(mainSlot.profile) : null),
+    [mainSlot],
   );
-  const presetDirty = useMemo(() => {
+  const mainPresetDirty = useMemo(() => {
     if (!baselineMainPayload) return false;
     if (!currentMainPayload.ok) return true;
     return !payloadEquals(currentMainPayload.payload, baselineMainPayload);
   }, [baselineMainPayload, currentMainPayload]);
-
-  const selectedProfileId = project?.llm_profile_id ?? null;
-  const selectedProfile = selectedProfileId ? (profiles.find((p) => p.id === selectedProfileId) ?? null) : null;
-  const upsertProfile = useCallback((profile: LLMProfile) => {
-    setProfiles((prev) => [profile, ...prev.filter((item) => item.id !== profile.id)]);
-  }, []);
 
   const taskCatalogByKey = useMemo(() => {
     const map = new Map<string, LLMTaskCatalogItem>();
@@ -403,11 +398,11 @@ export function PromptsPage() {
     return Object.values(taskDrafts)
       .map((draft) => {
         const baseline = taskBaseline[draft.task_key] ?? null;
-        const baselinePayload = baseline ? payloadFromPreset(baseline) : null;
-        const payload = buildPresetPayload(draft.form);
+        const baselinePayload = baseline ? overridePayloadFromPreset(baseline) : null;
+        const payload = buildTaskOverridePayload(draft.form);
         const payloadDirty =
-          baselinePayload === null || !payload.ok ? true : !payloadEquals(payload.payload, baselinePayload);
-        const bindingDirty = (draft.llm_profile_id ?? null) !== (baseline?.llm_profile_id ?? null);
+          baselinePayload === null || !payload.ok ? true : !overridePayloadEquals(payload.payload, baselinePayload);
+        const bindingDirty = (draft.module_slot_id ?? null) !== (baseline?.module_slot_id ?? null);
         const item = taskCatalogByKey.get(draft.task_key);
         return {
           task_key: draft.task_key,
@@ -418,46 +413,150 @@ export function PromptsPage() {
           recommended_model: item?.recommended_model ?? null,
           recommended_note: item?.recommended_note ?? null,
           cost_tier: item?.cost_tier ?? null,
-          llm_profile_id: draft.llm_profile_id,
+          module_slot_id: draft.module_slot_id,
           form: draft.form,
           dirty: draft.isNew || payloadDirty || bindingDirty,
           saving: Boolean(taskSaving[draft.task_key]),
           deleting: Boolean(taskDeleting[draft.task_key]),
-          modelList: taskModelLists[draft.task_key] ?? { ...EMPTY_MODEL_LIST_STATE },
         };
       })
       .sort((a, b) => a.group.localeCompare(b.group, "zh-Hans-CN") || a.label.localeCompare(b.label, "zh-Hans-CN"));
-  }, [taskBaseline, taskCatalogByKey, taskDeleting, taskDrafts, taskModelLists, taskSaving]);
+  }, [taskBaseline, taskCatalogByKey, taskDeleting, taskDrafts, taskSaving]);
 
   const taskDirty = useMemo(() => taskModules.some((item) => item.dirty), [taskModules]);
-  const addableTasks = useMemo(() => taskCatalog.filter((item) => !taskDrafts[item.key]), [taskCatalog, taskDrafts]);
+  const moduleDirty = useMemo(() => {
+    return moduleSlots.some((slot) => {
+      const draft = moduleDrafts[slot.id] ?? { display_name: slot.display_name, form: formFromProfile(slot.profile) };
+      if (draft.display_name !== slot.display_name) return true;
+      const payload = buildPresetPayload(draft.form);
+      if (!payload.ok) return true;
+      return !payloadEquals(payload.payload, payloadFromProfile(slot.profile));
+    });
+  }, [moduleDrafts, moduleSlots]);
+  const dirty = mainPresetDirty || taskDirty || moduleDirty;
+  const llmSaving = useMemo(
+    () =>
+      Object.values(moduleSaving).some(Boolean) ||
+      Object.values(taskSaving).some(Boolean) ||
+      Object.values(taskDeleting).some(Boolean),
+    [moduleSaving, taskDeleting, taskSaving],
+  );
+  const llmTesting = useMemo(() => Object.values(moduleTesting).some(Boolean), [moduleTesting]);
+  const llmBusy = llmSaving || llmTesting;
 
-  const dirty = presetDirty || taskDirty;
+  const vectorRagDirty = useMemo(() => {
+    if (!baselineSettings) return false;
+    const baseline = mapVectorFormFromSettings(baselineSettings);
+    return JSON.stringify(vectorForm) !== JSON.stringify(baseline.vectorForm);
+  }, [baselineSettings, vectorForm]);
+
+  const vectorApiKeyDirty = useMemo(() => vectorApiKeyDraft.trim().length > 0 || vectorApiKeyClearRequested, [vectorApiKeyDraft, vectorApiKeyClearRequested]);
+  const rerankApiKeyDirty = useMemo(() => rerankApiKeyDraft.trim().length > 0 || rerankApiKeyClearRequested, [rerankApiKeyDraft, rerankApiKeyClearRequested]);
+
+  const qpDirty = useMemo(() => {
+    if (!baselineSettings) return false;
+    const baseline = baselineSettings.query_preprocessing;
+    return qpEnabled !== (baseline?.enabled ?? false) ||
+           qpTags !== (baseline?.tags?.join(", ") ?? "") ||
+           qpExclusionRules !== (baseline?.exclusion_rules?.join("\n") ?? "") ||
+           qpIndexRefEnhance !== (baseline?.index_ref_enhance ?? false);
+  }, [baselineSettings, qpEnabled, qpTags, qpExclusionRules, qpIndexRefEnhance]);
+
+  const autoUpdateDirty = useMemo(() => {
+    if (!baselineSettings) return false;
+    return autoUpdateForm.auto_update_worldbook_enabled !== baselineSettings.auto_update_worldbook_enabled ||
+           autoUpdateForm.auto_update_characters_enabled !== baselineSettings.auto_update_characters_enabled ||
+           autoUpdateForm.auto_update_story_memory_enabled !== baselineSettings.auto_update_story_memory_enabled ||
+           autoUpdateForm.auto_update_graph_enabled !== baselineSettings.auto_update_graph_enabled ||
+           autoUpdateForm.auto_update_vector_enabled !== baselineSettings.auto_update_vector_enabled ||
+           autoUpdateForm.auto_update_search_enabled !== baselineSettings.auto_update_search_enabled ||
+           autoUpdateForm.auto_update_fractal_enabled !== baselineSettings.auto_update_fractal_enabled ||
+           autoUpdateForm.auto_update_tables_enabled !== baselineSettings.auto_update_tables_enabled;
+  }, [baselineSettings, autoUpdateForm]);
+
   const llmCtaBlockedReason = useMemo(() => {
-    if (!selectedProfileId) return "请先选择或新建一个后端配置";
-    if (!selectedProfile?.has_api_key) return "请先保存 API Key";
+    if (!mainSlot) return "请先创建主模块";
+    if (!mainSlot.profile.has_api_key) return "请先保存 API Key";
     return null;
-  }, [selectedProfile?.has_api_key, selectedProfileId]);
+  }, [mainSlot]);
 
-  useEffect(() => {
-    if (!addableTasks.length) {
-      if (selectedAddTaskKey) setSelectedAddTaskKey("");
-      return;
-    }
-    if (selectedAddTaskKey && addableTasks.some((item) => item.key === selectedAddTaskKey)) return;
-    setSelectedAddTaskKey(addableTasks[0].key);
-  }, [addableTasks, selectedAddTaskKey]);
+  const getModuleDraft = useCallback(
+    (slot: ModuleSlot) => moduleDrafts[slot.id] ?? { display_name: slot.display_name, form: formFromProfile(slot.profile) },
+    [moduleDrafts],
+  );
 
-  const saveAll = useCallback(
-    async (opts?: { silent?: boolean; snapshot?: LlmForm }): Promise<boolean> => {
+  const isModuleDirty = useCallback(
+    (slot: ModuleSlot) => {
+      const draft = getModuleDraft(slot);
+      if (draft.display_name !== slot.display_name) return true;
+      const payload = buildPresetPayload(draft.form);
+      if (!payload.ok) return true;
+      return !payloadEquals(payload.payload, payloadFromProfile(slot.profile));
+    },
+    [getModuleDraft],
+  );
+
+  const moduleCards = useMemo(
+    () =>
+      moduleSlots.map((slot) => {
+        const draft = getModuleDraft(slot);
+        return {
+          slot_id: slot.id,
+          display_name: draft.display_name,
+          is_main: slot.is_main,
+          profile: slot.profile,
+          form: draft.form,
+          dirty: isModuleDirty(slot),
+          saving: Boolean(moduleSaving[slot.id]),
+          testing: Boolean(moduleTesting[slot.id]),
+          modelList: moduleModelLists[slot.id] ?? EMPTY_MODEL_LIST_STATE,
+          apiKeyDraft: moduleApiKeyDrafts[slot.id] ?? "",
+        };
+      }),
+    [getModuleDraft, isModuleDirty, moduleApiKeyDrafts, moduleModelLists, moduleSaving, moduleSlots, moduleTesting],
+  );
+
+  const updateModuleName = useCallback((slotId: string, value: string) => {
+    setModuleDrafts((prev) => {
+      const current = prev[slotId];
+      return {
+        ...prev,
+        [slotId]: {
+          display_name: value,
+          form: current?.form ?? { ...DEFAULT_LLM_FORM },
+        },
+      };
+    });
+  }, []);
+
+  const updateModuleForm = useCallback((slotId: string, updater: (prev: LlmForm) => LlmForm) => {
+    setModuleDrafts((prev) => {
+      const current = prev[slotId];
+      if (!current) return prev;
+      return {
+        ...prev,
+        [slotId]: {
+          ...current,
+          form: updater(current.form),
+        },
+      };
+    });
+  }, []);
+
+  const updateModuleApiKeyDraft = useCallback((slotId: string, value: string) => {
+    setModuleApiKeyDrafts((prev) => ({ ...prev, [slotId]: value }));
+  }, []);
+
+  const saveModule = useCallback(
+    async (slotId: string, opts?: { silent?: boolean; snapshot?: LlmForm; displayName?: string }): Promise<boolean> => {
       if (!projectId) return false;
+      const slot = moduleSlots.find((item) => item.id === slotId);
+      if (!slot) return false;
+
       const silent = Boolean(opts?.silent);
-      const snapshot = opts?.snapshot ?? llmForm;
-      if (!presetDirty && !opts?.snapshot) return true;
-      if (savingPresetRef.current) {
-        queuedPresetSaveRef.current = { silent, snapshot };
-        return false;
-      }
+      const draft = moduleDrafts[slotId];
+      const snapshot = opts?.snapshot ?? draft?.form ?? formFromProfile(slot.profile);
+      const displayName = opts?.displayName ?? draft?.display_name ?? slot.display_name;
 
       const payload = buildPresetPayload(snapshot);
       if (!payload.ok) {
@@ -470,85 +569,311 @@ export function PromptsPage() {
         wizardRefreshTimerRef.current = window.setTimeout(() => void refreshWizard(), 1200);
       };
 
-      savingPresetRef.current = true;
-      setSavingPreset(true);
+      setModuleSaving((prev) => ({ ...prev, [slotId]: true }));
       try {
-        if (selectedProfileId) {
-          const currentProvider = selectedProfile?.provider ?? null;
-          const currentModel = selectedProfile?.model ?? null;
-          const currentBaseUrl = (selectedProfile?.base_url ?? "").trim();
-          const needsProfileSync =
-            currentProvider !== payload.payload.provider ||
-            currentModel !== payload.payload.model ||
-            currentBaseUrl !== (payload.payload.base_url ?? "");
-          if (needsProfileSync) {
-            const res = await apiJson<{ profile: LLMProfile }>(`/api/llm_profiles/${selectedProfileId}`, {
-              method: "PUT",
-              body: JSON.stringify({
-                provider: payload.payload.provider,
-                base_url: payload.payload.base_url,
-                model: payload.payload.model,
-              }),
-            });
-            setProfiles((prev) => prev.map((p) => (p.id === res.data.profile.id ? res.data.profile : p)));
-          }
-        }
+        const res = await apiJson<{ module: ModuleSlot }>(`/api/projects/${projectId}/modules/${slotId}`, {
+          method: "PUT",
+          body: JSON.stringify({
+            display_name: displayName,
+            profile_update: {
+              provider: payload.payload.provider,
+              base_url: payload.payload.base_url,
+              model: payload.payload.model,
+              temperature: payload.payload.temperature,
+              top_p: payload.payload.top_p,
+              max_tokens: payload.payload.max_tokens,
+              presence_penalty: payload.payload.presence_penalty,
+              frequency_penalty: payload.payload.frequency_penalty,
+              top_k: payload.payload.top_k,
+              stop: payload.payload.stop,
+              timeout_seconds: payload.payload.timeout_seconds,
+              extra: payload.payload.extra,
+            },
+          }),
+        });
+        const updated = res.data.module;
+        setModuleSlots((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+        setModuleDrafts((prev) => ({
+          ...prev,
+          [updated.id]: { display_name: updated.display_name, form: formFromProfile(updated.profile) },
+        }));
+        setModuleApiKeyDrafts((prev) => ({ ...prev, [updated.id]: "" }));
 
-        if (presetDirty) {
-          const res = await apiJson<{ llm_preset: LLMPreset }>(`/api/projects/${projectId}/llm_preset`, {
-            method: "PUT",
-            body: JSON.stringify(payload.payload),
-          });
-          setBaselinePreset(res.data.llm_preset);
-
-          setLlmForm((current) => {
-            if (current.provider !== snapshot.provider) return current;
-            if (current.base_url !== snapshot.base_url) return current;
-            if (current.model !== snapshot.model) return current;
-            if (current.temperature !== snapshot.temperature) return current;
-            if (current.top_p !== snapshot.top_p) return current;
-            if (current.max_tokens !== snapshot.max_tokens) return current;
-            if (current.presence_penalty !== snapshot.presence_penalty) return current;
-            if (current.frequency_penalty !== snapshot.frequency_penalty) return current;
-            if (current.top_k !== snapshot.top_k) return current;
-            if (current.stop !== snapshot.stop) return current;
-            if (current.timeout_seconds !== snapshot.timeout_seconds) return current;
-            if (current.reasoning_effort !== snapshot.reasoning_effort) return current;
-            if (current.text_verbosity !== snapshot.text_verbosity) return current;
-            if (current.anthropic_thinking_enabled !== snapshot.anthropic_thinking_enabled) return current;
-            if (current.anthropic_thinking_budget_tokens !== snapshot.anthropic_thinking_budget_tokens) return current;
-            if (current.gemini_thinking_budget !== snapshot.gemini_thinking_budget) return current;
-            if (current.gemini_include_thoughts !== snapshot.gemini_include_thoughts) return current;
-            if (current.extra !== snapshot.extra) return current;
-            return formFromPreset(res.data.llm_preset);
-          });
-        }
-
-        bumpWizardLocal();
         if (silent) scheduleWizardRefresh();
         else {
-          toast.toastSuccess("已保存");
+          toast.toastSuccess("已保存", res.request_id);
           await refreshWizard();
         }
+        return true;
+      } catch (e) {
+        const err = e as ApiError;
+        if (!silent) toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        return false;
+      } finally {
+        setModuleSaving((prev) => ({ ...prev, [slotId]: false }));
+      }
+    },
+    [moduleDrafts, moduleSlots, projectId, refreshWizard, toast],
+  );
+
+  const deleteModule = useCallback(
+    async (slotId: string): Promise<boolean> => {
+      if (!projectId) return false;
+      const slot = moduleSlots.find((item) => item.id === slotId);
+      if (!slot || slot.is_main) return false;
+
+      const yes = await confirm.confirm({
+        title: "删除模块",
+        description: `确认删除模块“${slot.display_name}”？已绑定该模块的任务将回退到主模块。`,
+        confirmText: "删除",
+        cancelText: "取消",
+        danger: true,
+      });
+      if (!yes) return false;
+
+      setModuleSaving((prev) => ({ ...prev, [slotId]: true }));
+      try {
+        await apiJson<Record<string, never>>(`/api/projects/${projectId}/modules/${slotId}`, { method: "DELETE" });
+        setModuleSlots((prev) => prev.filter((item) => item.id !== slotId));
+        setModuleDrafts((prev) => {
+          const next = { ...prev };
+          delete next[slotId];
+          return next;
+        });
+        setModuleModelLists((prev) => {
+          const next = { ...prev };
+          delete next[slotId];
+          return next;
+        });
+        setModuleTesting((prev) => {
+          const next = { ...prev };
+          delete next[slotId];
+          return next;
+        });
+        setModuleApiKeyDrafts((prev) => {
+          const next = { ...prev };
+          delete next[slotId];
+          return next;
+        });
+        toast.toastSuccess("模块已删除");
         return true;
       } catch (e) {
         const err = e as ApiError;
         toast.toastError(`${err.message} (${err.code})`, err.requestId);
         return false;
       } finally {
-        setSavingPreset(false);
-        savingPresetRef.current = false;
-        if (queuedPresetSaveRef.current) {
-          const queued = queuedPresetSaveRef.current;
-          queuedPresetSaveRef.current = null;
-          void saveAll({ silent: queued.silent, snapshot: queued.snapshot });
-        }
+        setModuleSaving((prev) => ({ ...prev, [slotId]: false }));
       }
     },
-    [bumpWizardLocal, llmForm, presetDirty, projectId, refreshWizard, selectedProfile, selectedProfileId, toast],
+    [confirm, moduleSlots, projectId, toast],
   );
 
-  const updateTaskForm = useCallback((taskKey: string, updater: (prev: LlmForm) => LlmForm) => {
+  const addModule = useCallback(async (): Promise<boolean> => {
+    if (!projectId) return false;
+    const payload = buildPresetPayload(mainForm);
+    if (!payload.ok) {
+      toast.toastError(payload.message);
+      return false;
+    }
+    const displayName = "新模块";
+    try {
+      const res = await apiJson<{ module: ModuleSlot }>(`/api/projects/${projectId}/modules`, {
+        method: "POST",
+        body: JSON.stringify({
+          display_name: displayName,
+          new_profile: {
+            name: displayName,
+            provider: payload.payload.provider,
+            base_url: payload.payload.base_url,
+            model: payload.payload.model,
+            temperature: payload.payload.temperature,
+            top_p: payload.payload.top_p,
+            max_tokens: payload.payload.max_tokens,
+            presence_penalty: payload.payload.presence_penalty,
+            frequency_penalty: payload.payload.frequency_penalty,
+            top_k: payload.payload.top_k,
+            stop: payload.payload.stop,
+            timeout_seconds: payload.payload.timeout_seconds,
+            extra: payload.payload.extra,
+          },
+        }),
+      });
+      const created = res.data.module;
+      setModuleSlots((prev) => [...prev, created]);
+      setModuleDrafts((prev) => ({
+        ...prev,
+        [created.id]: { display_name: created.display_name, form: formFromProfile(created.profile) },
+      }));
+      toast.toastSuccess("模块已添加", res.request_id);
+      return true;
+    } catch (e) {
+      const err = e as ApiError;
+      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      return false;
+    }
+  }, [mainForm, projectId, toast]);
+
+  const saveModuleApiKey = useCallback(
+    async (slotId: string): Promise<boolean> => {
+      if (!projectId) return false;
+      const draft = (moduleApiKeyDrafts[slotId] ?? "").trim();
+      if (!draft) return false;
+      try {
+        const res = await apiJson<{ module: ModuleSlot }>(`/api/projects/${projectId}/modules/${slotId}`, {
+          method: "PUT",
+          body: JSON.stringify({ profile_update: { api_key: draft } }),
+        });
+        const updated = res.data.module;
+        setModuleSlots((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+        setModuleApiKeyDrafts((prev) => ({ ...prev, [slotId]: "" }));
+        toast.toastSuccess("API Key 已保存", res.request_id);
+        return true;
+      } catch (e) {
+        const err = e as ApiError;
+        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        return false;
+      }
+    },
+    [moduleApiKeyDrafts, projectId, toast],
+  );
+
+  const clearModuleApiKey = useCallback(
+    async (slotId: string): Promise<boolean> => {
+      if (!projectId) return false;
+      try {
+        const res = await apiJson<{ module: ModuleSlot }>(`/api/projects/${projectId}/modules/${slotId}`, {
+          method: "PUT",
+          body: JSON.stringify({ profile_update: { api_key: "" } }),
+        });
+        const updated = res.data.module;
+        setModuleSlots((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+        toast.toastSuccess("API Key 已清除", res.request_id);
+        return true;
+      } catch (e) {
+        const err = e as ApiError;
+        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        return false;
+      }
+    },
+    [projectId, toast],
+  );
+
+  const loadModuleModels = useCallback(
+    async (slotId: string) => {
+      if (!projectId) return;
+      const slot = moduleSlots.find((item) => item.id === slotId);
+      if (!slot) return;
+      const draft = moduleDrafts[slotId]?.form ?? formFromProfile(slot.profile);
+
+      setModuleModelLists((prev) => ({
+        ...prev,
+        [slotId]: {
+          ...(prev[slotId] ?? { ...EMPTY_MODEL_LIST_STATE }),
+          loading: true,
+        },
+      }));
+
+      const params = new URLSearchParams();
+      params.set("provider", draft.provider);
+      if (draft.base_url.trim()) params.set("base_url", draft.base_url.trim());
+      params.set("profile_id", slot.profile.id);
+
+      try {
+        const res = await apiJson<LLMModelsResponse>(`/api/llm_models?${params.toString()}`);
+        const options = (res.data.models ?? [])
+          .map((item) => ({
+            id: String(item.id || "").trim(),
+            display_name: String(item.display_name || item.id || "").trim(),
+          }))
+          .filter((item) => item.id);
+        setModuleModelLists((prev) => ({
+          ...prev,
+          [slotId]: {
+            loading: false,
+            options,
+            warning: res.data.warning?.message ?? null,
+            error: null,
+            requestId: res.request_id,
+          },
+        }));
+      } catch (e) {
+        const err = e as ApiError;
+        setModuleModelLists((prev) => ({
+          ...prev,
+          [slotId]: {
+            loading: false,
+            options: [],
+            warning: null,
+            error: `${err.message} (${err.code})`,
+            requestId: err.requestId ?? null,
+          },
+        }));
+      }
+    },
+    [moduleDrafts, moduleSlots, projectId],
+  );
+
+  const testModuleConnection = useCallback(
+    async (slotId: string): Promise<boolean> => {
+      if (!projectId) return false;
+      const slot = moduleSlots.find((item) => item.id === slotId);
+      if (!slot) return false;
+      const draft = moduleDrafts[slotId]?.form ?? formFromProfile(slot.profile);
+
+      if (!slot.profile.has_api_key) {
+        toast.toastError("请先保存 API Key");
+        return false;
+      }
+
+      const payload = buildPresetPayload(draft);
+      if (!payload.ok) {
+        toast.toastError(payload.message);
+        return false;
+      }
+
+      setModuleTesting((prev) => ({ ...prev, [slotId]: true }));
+      try {
+        const res = await apiJson<{ latency_ms: number; text?: string }>("/api/llm/test", {
+          method: "POST",
+          headers: {
+            "X-LLM-Provider": payload.payload.provider,
+          },
+          body: JSON.stringify({
+            project_id: projectId,
+            profile_id: slot.profile.id,
+            provider: payload.payload.provider,
+            base_url: payload.payload.base_url,
+            model: payload.payload.model,
+            timeout_seconds: parseTimeoutSecondsForTest(draft.timeout_seconds),
+            extra: payload.payload.extra,
+            params: {
+              temperature: payload.payload.temperature ?? 0,
+              max_tokens: 64,
+            },
+          }),
+        });
+        const preview = (res.data.text ?? "").trim();
+        toast.toastSuccess(
+          `连接成功（延迟 ${res.data.latency_ms}ms${preview ? `，输出：${preview}` : ""}）`,
+          res.request_id,
+        );
+        if (slot.is_main && projectId) {
+          markWizardLlmTestOk(projectId, payload.payload.provider, payload.payload.model);
+          bumpWizardLocal();
+        }
+        return true;
+      } catch (e) {
+        const err = e as ApiError;
+        toast.toastError(formatLlmTestApiError(err), err.requestId);
+        return false;
+      } finally {
+        setModuleTesting((prev) => ({ ...prev, [slotId]: false }));
+      }
+    },
+    [bumpWizardLocal, moduleDrafts, moduleSlots, projectId, toast],
+  );
+
+  const updateTaskForm = useCallback((taskKey: string, updater: (prev: TaskOverrideForm) => TaskOverrideForm) => {
     setTaskDrafts((prev) => {
       const current = prev[taskKey];
       if (!current) return prev;
@@ -562,74 +887,53 @@ export function PromptsPage() {
     });
   }, []);
 
-  const updateTaskProfile = useCallback(
-    (taskKey: string, profileId: string | null) => {
-      const targetProfile = profileId ? (profiles.find((item) => item.id === profileId) ?? null) : null;
-      const nextForm = targetProfile ? formFromProfile(targetProfile) : { ...llmForm };
-      setTaskDrafts((prev) => {
-        const current = prev[taskKey];
-        if (!current) return prev;
-        return {
-          ...prev,
-          [taskKey]: {
-            ...current,
-            llm_profile_id: profileId,
-            form: nextForm,
-          },
-        };
-      });
-      setTaskApiKeyDrafts((prev) => ({ ...prev, [taskKey]: "" }));
-    },
-    [llmForm, profiles],
-  );
-
-  const updateTaskApiKeyDraft = useCallback((taskKey: string, value: string) => {
-    setTaskApiKeyDrafts((prev) => ({ ...prev, [taskKey]: value }));
-  }, []);
-
-  const addTaskModule = useCallback(() => {
-    const taskKey = selectedAddTaskKey.trim();
-    if (!taskKey) return;
+  const updateTaskModule = useCallback((taskKey: string, moduleSlotId: string | null) => {
     setTaskDrafts((prev) => {
-      if (prev[taskKey]) return prev;
+      const current = prev[taskKey];
+      if (!current) return prev;
       return {
         ...prev,
         [taskKey]: {
-          task_key: taskKey,
-          llm_profile_id: null,
-          form: { ...llmForm },
-          isNew: true,
+          ...current,
+          module_slot_id: moduleSlotId,
         },
       };
     });
-    setTaskModelLists((prev) => ({ ...prev, [taskKey]: { ...EMPTY_MODEL_LIST_STATE } }));
-    setTaskApiKeyDrafts((prev) => ({ ...prev, [taskKey]: "" }));
-  }, [llmForm, selectedAddTaskKey]);
+  }, []);
+
+  const addTaskModule = useCallback(
+    (taskKey: string) => {
+      const key = taskKey.trim();
+      if (!key) return;
+      setTaskDrafts((prev) => {
+        if (prev[key]) return prev;
+        return {
+          ...prev,
+          [key]: {
+            task_key: key,
+            module_slot_id: mainSlotId,
+            form: { ...EMPTY_TASK_OVERRIDE },
+            isNew: true,
+          },
+        };
+      });
+    },
+    [mainSlotId],
+  );
 
   const saveTaskModule = useCallback(
     async (taskKey: string, opts?: { silent?: boolean }): Promise<boolean> => {
       if (!projectId) return false;
       const draft = taskDrafts[taskKey];
       if (!draft) return false;
-      if (taskProfileBusy[taskKey]) {
-        if (!opts?.silent) toast.toastError("该任务正在更新 API Key，请稍后再试");
+      if (!draft.module_slot_id) {
+        if (!opts?.silent) toast.toastError("请选择要绑定的模块");
         return false;
       }
-      const payload = buildPresetPayload(draft.form);
+      const payload = buildTaskOverridePayload(draft.form);
       if (!payload.ok) {
         if (!opts?.silent) toast.toastError(payload.message);
         return false;
-      }
-      if (draft.llm_profile_id) {
-        const boundProfile = profiles.find((item) => item.id === draft.llm_profile_id) ?? null;
-        if (!boundProfile) {
-          if (!opts?.silent) toast.toastError("任务模块绑定的配置库不存在，请重新选择");
-          return false;
-        }
-        if (boundProfile.provider !== payload.payload.provider) {
-          if (!opts?.silent) toast.toastError("任务模块 provider 必须与所选 API 配置库 provider 一致");
-          return false;
-        }
       }
 
       setTaskSaving((prev) => ({ ...prev, [taskKey]: true }));
@@ -639,8 +943,8 @@ export function PromptsPage() {
           {
             method: "PUT",
             body: JSON.stringify({
+              module_slot_id: draft.module_slot_id,
               ...payload.payload,
-              llm_profile_id: draft.llm_profile_id,
             }),
           },
         );
@@ -653,13 +957,13 @@ export function PromptsPage() {
             ...prev,
             [taskKey]: {
               ...current,
-              llm_profile_id: row.llm_profile_id ?? null,
-              form: formFromPreset(row),
+              module_slot_id: row.module_slot_id ?? null,
+              form: overrideFormFromPreset(row),
               isNew: false,
             },
           };
         });
-        if (!opts?.silent) toast.toastSuccess("任务模块已保存", res.request_id);
+        if (!opts?.silent) toast.toastSuccess("任务覆盖已保存", res.request_id);
         return true;
       } catch (e) {
         const err = e as ApiError;
@@ -669,7 +973,7 @@ export function PromptsPage() {
         setTaskSaving((prev) => ({ ...prev, [taskKey]: false }));
       }
     },
-    [profiles, projectId, taskDrafts, taskProfileBusy, toast],
+    [projectId, taskDrafts, toast],
   );
 
   const deleteTaskModule = useCallback(
@@ -678,8 +982,8 @@ export function PromptsPage() {
       const draft = taskDrafts[taskKey];
       if (!draft) return false;
       const yes = await confirm.confirm({
-        title: "删除任务模块",
-        description: `确认删除任务模块「${taskCatalogByKey.get(taskKey)?.label ?? taskKey}」？删除后将回退到主模块。`,
+        title: "删除任务覆盖",
+        description: `确认删除任务“${taskCatalogByKey.get(taskKey)?.label ?? taskKey}”的覆盖配置？`,
         confirmText: "删除",
         cancelText: "取消",
         danger: true,
@@ -692,27 +996,7 @@ export function PromptsPage() {
           delete next[taskKey];
           return next;
         });
-        setTaskModelLists((prev) => {
-          const next = { ...prev };
-          delete next[taskKey];
-          return next;
-        });
-        setTaskTesting((prev) => {
-          const next = { ...prev };
-          delete next[taskKey];
-          return next;
-        });
-        setTaskProfileBusy((prev) => {
-          const next = { ...prev };
-          delete next[taskKey];
-          return next;
-        });
-        setTaskApiKeyDrafts((prev) => {
-          const next = { ...prev };
-          delete next[taskKey];
-          return next;
-        });
-        toast.toastSuccess("已移除未保存模块");
+        toast.toastSuccess("已移除未保存覆盖");
         return true;
       }
 
@@ -720,9 +1004,7 @@ export function PromptsPage() {
       try {
         await apiJson<Record<string, never>>(
           `/api/projects/${projectId}/llm_task_presets/${encodeURIComponent(taskKey)}`,
-          {
-            method: "DELETE",
-          },
+          { method: "DELETE" },
         );
         setTaskBaseline((prev) => {
           const next = { ...prev };
@@ -734,27 +1016,7 @@ export function PromptsPage() {
           delete next[taskKey];
           return next;
         });
-        setTaskModelLists((prev) => {
-          const next = { ...prev };
-          delete next[taskKey];
-          return next;
-        });
-        setTaskTesting((prev) => {
-          const next = { ...prev };
-          delete next[taskKey];
-          return next;
-        });
-        setTaskProfileBusy((prev) => {
-          const next = { ...prev };
-          delete next[taskKey];
-          return next;
-        });
-        setTaskApiKeyDrafts((prev) => {
-          const next = { ...prev };
-          delete next[taskKey];
-          return next;
-        });
-        toast.toastSuccess("任务模块已删除");
+        toast.toastSuccess("任务覆盖已删除");
         return true;
       } catch (e) {
         const err = e as ApiError;
@@ -767,96 +1029,14 @@ export function PromptsPage() {
     [confirm, projectId, taskBaseline, taskCatalogByKey, taskDrafts, toast],
   );
 
-  const loadModels = useCallback(
-    async (opts: { scope: "main" | "task"; taskKey?: string; form: LlmForm; profileId: string | null }) => {
-      if (!projectId) return;
-      const setLoading = (loading: boolean) => {
-        if (opts.scope === "main") {
-          setMainModelList((prev) => ({ ...prev, loading }));
-          return;
-        }
-        const key = opts.taskKey ?? "";
-        setTaskModelLists((prev) => ({
-          ...prev,
-          [key]: {
-            ...(prev[key] ?? { ...EMPTY_MODEL_LIST_STATE }),
-            loading,
-          },
-        }));
-      };
-      const setResult = (state: LlmModelListState) => {
-        if (opts.scope === "main") {
-          setMainModelList(state);
-          return;
-        }
-        const key = opts.taskKey ?? "";
-        setTaskModelLists((prev) => ({ ...prev, [key]: state }));
-      };
-
-      const params = new URLSearchParams();
-      params.set("provider", opts.form.provider);
-      if (opts.form.base_url.trim()) params.set("base_url", opts.form.base_url.trim());
-      if (opts.profileId) params.set("profile_id", opts.profileId);
-      else params.set("project_id", projectId);
-
-      setLoading(true);
-      try {
-        const res = await apiJson<LLMModelsResponse>(`/api/llm_models?${params.toString()}`);
-        const options = (res.data.models ?? [])
-          .map((item) => ({
-            id: String(item.id || "").trim(),
-            display_name: String(item.display_name || item.id || "").trim(),
-          }))
-          .filter((item) => item.id);
-        setResult({
-          loading: false,
-          options,
-          warning: res.data.warning?.message ?? null,
-          error: null,
-          requestId: res.request_id,
-        });
-      } catch (e) {
-        const err = e as ApiError;
-        setResult({
-          loading: false,
-          options: [],
-          warning: null,
-          error: `${err.message} (${err.code})`,
-          requestId: err.requestId ?? null,
-        });
-      }
-    },
-    [projectId],
-  );
-
-  const reloadMainModels = useCallback(() => {
-    void loadModels({
-      scope: "main",
-      form: llmForm,
-      profileId: selectedProfileId,
-    });
-  }, [llmForm, loadModels, selectedProfileId]);
-
-  const reloadTaskModels = useCallback(
-    (taskKey: string) => {
-      const draft = taskDrafts[taskKey];
-      if (!draft) return;
-      void loadModels({
-        scope: "task",
-        taskKey,
-        form: draft.form,
-        profileId: draft.llm_profile_id,
-      });
-    },
-    [loadModels, taskDrafts],
-  );
-
   const saveAllDirtyModules = useCallback(async (): Promise<boolean> => {
     let ok = true;
     let savedAny = false;
-    if (presetDirty) {
+    for (const slot of moduleSlots) {
+      if (!isModuleDirty(slot)) continue;
       savedAny = true;
-      ok = (await saveAll({ silent: true })) && ok;
+      const draft = getModuleDraft(slot);
+      ok = (await saveModule(slot.id, { silent: true, snapshot: draft.form, displayName: draft.display_name })) && ok;
     }
     for (const item of taskModules) {
       if (!item.dirty) continue;
@@ -864,880 +1044,21 @@ export function PromptsPage() {
       ok = (await saveTaskModule(item.task_key, { silent: true })) && ok;
     }
     if (savedAny && !ok) {
-      toast.toastError("存在未保存模块，请先检查参数与配置绑定");
+      toast.toastError("存在未保存模块，请检查参数");
     }
     if (savedAny && ok) {
       toast.toastSuccess("已保存全部模块");
       await refreshWizard();
     }
     return ok;
-  }, [presetDirty, refreshWizard, saveAll, saveTaskModule, taskModules, toast]);
-
+  }, [getModuleDraft, isModuleDirty, moduleSlots, refreshWizard, saveModule, saveTaskModule, taskModules, toast]);
   useSaveHotkey(() => void saveAllDirtyModules(), dirty);
 
-  useAutoSave({
-    enabled: Boolean(projectId),
-    dirty: presetDirty,
-    delayMs: 1200,
-    getSnapshot: () => ({ ...llmForm }),
-    onSave: async (snapshot) => {
-      await saveAll({ silent: true, snapshot });
-    },
-    deps: [
-      llmForm.provider,
-      llmForm.base_url,
-      llmForm.model,
-      llmForm.temperature,
-      llmForm.top_p,
-      llmForm.max_tokens,
-      llmForm.presence_penalty,
-      llmForm.frequency_penalty,
-      llmForm.top_k,
-      llmForm.stop,
-      llmForm.timeout_seconds,
-      llmForm.reasoning_effort,
-      llmForm.text_verbosity,
-      llmForm.anthropic_thinking_enabled ? "1" : "0",
-      llmForm.anthropic_thinking_budget_tokens,
-      llmForm.gemini_thinking_budget,
-      llmForm.gemini_include_thoughts ? "1" : "0",
-      llmForm.extra,
-      projectId ?? "",
-    ],
-  });
-
-  const vectorApiKeyDirty = vectorApiKeyClearRequested || vectorApiKeyDraft.trim().length > 0;
-  const rerankApiKeyDirty = rerankApiKeyClearRequested || rerankApiKeyDraft.trim().length > 0;
-  const vectorRagDirty = useMemo(() => {
-    if (!baselineSettings) return false;
-    return (
-      vectorForm.vector_rerank_enabled !== baselineSettings.vector_rerank_effective_enabled ||
-      vectorForm.vector_rerank_method.trim() !== baselineSettings.vector_rerank_effective_method ||
-      Math.max(1, Math.min(1000, Math.floor(vectorForm.vector_rerank_top_k))) !==
-        baselineSettings.vector_rerank_effective_top_k ||
-      vectorForm.vector_rerank_provider !== baselineSettings.vector_rerank_provider ||
-      vectorForm.vector_rerank_base_url !== baselineSettings.vector_rerank_base_url ||
-      vectorForm.vector_rerank_model !== baselineSettings.vector_rerank_model ||
-      (vectorForm.vector_rerank_timeout_seconds ?? null) !== (baselineSettings.vector_rerank_timeout_seconds ?? null) ||
-      (vectorForm.vector_rerank_hybrid_alpha ?? null) !== (baselineSettings.vector_rerank_hybrid_alpha ?? null) ||
-      vectorForm.vector_embedding_provider !== baselineSettings.vector_embedding_provider ||
-      vectorForm.vector_embedding_base_url !== baselineSettings.vector_embedding_base_url ||
-      vectorForm.vector_embedding_model !== baselineSettings.vector_embedding_model ||
-      vectorForm.vector_embedding_azure_deployment !== baselineSettings.vector_embedding_azure_deployment ||
-      vectorForm.vector_embedding_azure_api_version !== baselineSettings.vector_embedding_azure_api_version ||
-      vectorForm.vector_embedding_sentence_transformers_model !==
-        baselineSettings.vector_embedding_sentence_transformers_model
-    );
-  }, [baselineSettings, vectorForm]);
-
-  const autoUpdateDirty = useMemo(() => {
-    if (!baselineSettings) return false;
-    return (
-      autoUpdateForm.auto_update_worldbook_enabled !== Boolean(baselineSettings.auto_update_worldbook_enabled ?? true) ||
-      autoUpdateForm.auto_update_characters_enabled !== Boolean(baselineSettings.auto_update_characters_enabled ?? true) ||
-      autoUpdateForm.auto_update_story_memory_enabled !== Boolean(baselineSettings.auto_update_story_memory_enabled ?? true) ||
-      autoUpdateForm.auto_update_graph_enabled !== Boolean(baselineSettings.auto_update_graph_enabled ?? true) ||
-      autoUpdateForm.auto_update_vector_enabled !== Boolean(baselineSettings.auto_update_vector_enabled ?? true) ||
-      autoUpdateForm.auto_update_search_enabled !== Boolean(baselineSettings.auto_update_search_enabled ?? true) ||
-      autoUpdateForm.auto_update_fractal_enabled !== Boolean(baselineSettings.auto_update_fractal_enabled ?? true) ||
-      autoUpdateForm.auto_update_tables_enabled !== Boolean(baselineSettings.auto_update_tables_enabled ?? true)
-    );
-  }, [baselineSettings, autoUpdateForm]);
-
-  const qpDirty = useMemo(() => {
-    if (!baselineSettings) return false;
-    const baseline = baselineSettings.query_preprocessing_effective;
-    const baseEnabled = Boolean(baseline?.enabled);
-    const baseTags = Array.isArray(baseline?.tags) ? baseline.tags.join("\n") : "";
-    const baseExclusion = Array.isArray(baseline?.exclusion_rules) ? baseline.exclusion_rules.join("\n") : "";
-    const baseIndexRef = Boolean(baseline?.index_ref_enhance);
-    return (
-      qpEnabled !== baseEnabled ||
-      qpTags !== baseTags ||
-      qpExclusionRules !== baseExclusion ||
-      qpIndexRefEnhance !== baseIndexRef
-    );
-  }, [baselineSettings, qpEnabled, qpTags, qpExclusionRules, qpIndexRefEnhance]);
-
-  const anyDirty = dirty || vectorRagDirty || vectorApiKeyDirty || rerankApiKeyDirty || autoUpdateDirty || qpDirty;
-
-  const saveVectorRagConfig = useCallback(async (): Promise<boolean> => {
-    if (!projectId) return false;
-    if (!baselineSettings) return false;
-    if (!vectorRagDirty && !vectorApiKeyDirty && !rerankApiKeyDirty) return true;
-    if (savingVectorRef.current) return false;
-
-    const rerankMethod = vectorForm.vector_rerank_method.trim() || "auto";
-    const rawTopK = vectorRerankTopKDraft.trim();
-    const parsedTopK = Math.floor(Number(rawTopK || String(vectorForm.vector_rerank_top_k)));
-    if (!Number.isFinite(parsedTopK) || parsedTopK < 1 || parsedTopK > 1000) {
-      toast.toastError("rerank top_k 必须为 1-1000 的整数");
-      return false;
-    }
-
-    const timeoutRaw = vectorRerankTimeoutDraft.trim();
-    const parsedTimeoutSeconds = timeoutRaw ? Math.floor(Number(timeoutRaw)) : null;
-    if (
-      parsedTimeoutSeconds !== null &&
-      (!Number.isFinite(parsedTimeoutSeconds) || parsedTimeoutSeconds < 1 || parsedTimeoutSeconds > 120)
-    ) {
-      toast.toastError("rerank timeout_seconds 必须为 1-120 的整数（或留空）");
-      return false;
-    }
-
-    const alphaRaw = vectorRerankHybridAlphaDraft.trim();
-    const parsedHybridAlpha = alphaRaw ? Number(alphaRaw) : null;
-    if (
-      parsedHybridAlpha !== null &&
-      (!Number.isFinite(parsedHybridAlpha) || parsedHybridAlpha < 0 || parsedHybridAlpha > 1)
-    ) {
-      toast.toastError("rerank hybrid_alpha 必须为 0-1 的数字（或留空）");
-      return false;
-    }
-
-    savingVectorRef.current = true;
-    setSavingVector(true);
-    try {
-      const res = await apiJson<{ settings: ProjectSettings }>(`/api/projects/${projectId}/settings`, {
-        method: "PUT",
-        body: JSON.stringify({
-          vector_rerank_enabled: Boolean(vectorForm.vector_rerank_enabled),
-          vector_rerank_method: rerankMethod,
-          vector_rerank_top_k: parsedTopK,
-          vector_rerank_provider: vectorForm.vector_rerank_provider,
-          vector_rerank_base_url: vectorForm.vector_rerank_base_url,
-          vector_rerank_model: vectorForm.vector_rerank_model,
-          vector_rerank_timeout_seconds: parsedTimeoutSeconds,
-          vector_rerank_hybrid_alpha: parsedHybridAlpha,
-          vector_embedding_provider: vectorForm.vector_embedding_provider,
-          vector_embedding_base_url: vectorForm.vector_embedding_base_url,
-          vector_embedding_model: vectorForm.vector_embedding_model,
-          vector_embedding_azure_deployment: vectorForm.vector_embedding_azure_deployment,
-          vector_embedding_azure_api_version: vectorForm.vector_embedding_azure_api_version,
-          vector_embedding_sentence_transformers_model: vectorForm.vector_embedding_sentence_transformers_model,
-          ...(rerankApiKeyDirty ? { vector_rerank_api_key: rerankApiKeyClearRequested ? "" : rerankApiKeyDraft } : {}),
-          ...(vectorApiKeyDirty
-            ? { vector_embedding_api_key: vectorApiKeyClearRequested ? "" : vectorApiKeyDraft }
-            : {}),
-        }),
-      });
-
-      const settings = res.data.settings;
-      const nextTopK = Number(settings.vector_rerank_effective_top_k ?? 20) || 20;
-      setBaselineSettings(settings);
-      setVectorForm({
-        vector_rerank_enabled: Boolean(settings.vector_rerank_effective_enabled),
-        vector_rerank_method: String(settings.vector_rerank_effective_method ?? "auto") || "auto",
-        vector_rerank_top_k: nextTopK,
-        vector_rerank_provider: settings.vector_rerank_provider ?? "",
-        vector_rerank_base_url: settings.vector_rerank_base_url ?? "",
-        vector_rerank_model: settings.vector_rerank_model ?? "",
-        vector_rerank_timeout_seconds: settings.vector_rerank_timeout_seconds ?? null,
-        vector_rerank_hybrid_alpha: settings.vector_rerank_hybrid_alpha ?? null,
-        vector_embedding_provider: settings.vector_embedding_provider ?? "",
-        vector_embedding_base_url: settings.vector_embedding_base_url ?? "",
-        vector_embedding_model: settings.vector_embedding_model ?? "",
-        vector_embedding_azure_deployment: settings.vector_embedding_azure_deployment ?? "",
-        vector_embedding_azure_api_version: settings.vector_embedding_azure_api_version ?? "",
-        vector_embedding_sentence_transformers_model: settings.vector_embedding_sentence_transformers_model ?? "",
-      });
-      setVectorRerankTopKDraft(String(nextTopK));
-      setVectorRerankTimeoutDraft(
-        settings.vector_rerank_timeout_seconds != null ? String(settings.vector_rerank_timeout_seconds) : "",
-      );
-      setVectorRerankHybridAlphaDraft(
-        settings.vector_rerank_hybrid_alpha != null ? String(settings.vector_rerank_hybrid_alpha) : "",
-      );
-      setVectorApiKeyDraft("");
-      setVectorApiKeyClearRequested(false);
-      setRerankApiKeyDraft("");
-      setRerankApiKeyClearRequested(false);
-
-      toast.toastSuccess("已保存");
-      return true;
-    } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
-      return false;
-    } finally {
-      setSavingVector(false);
-      savingVectorRef.current = false;
-    }
-  }, [
-    baselineSettings,
-    projectId,
-    rerankApiKeyClearRequested,
-    rerankApiKeyDirty,
-    rerankApiKeyDraft,
-    toast,
-    vectorApiKeyClearRequested,
-    vectorApiKeyDirty,
-    vectorApiKeyDraft,
-    vectorForm,
-    vectorRagDirty,
-    vectorRerankHybridAlphaDraft,
-    vectorRerankTopKDraft,
-    vectorRerankTimeoutDraft,
-  ]);
-
-  const saveAutoUpdate = useCallback(async () => {
-    if (!projectId || !baselineSettings || !autoUpdateDirty) return;
-    setSavingAutoUpdate(true);
-    try {
-      const res = await apiJson<{ settings: ProjectSettings }>(`/api/projects/${projectId}/settings`, {
-        method: "PUT",
-        body: JSON.stringify({
-          auto_update_worldbook_enabled: Boolean(autoUpdateForm.auto_update_worldbook_enabled),
-          auto_update_characters_enabled: Boolean(autoUpdateForm.auto_update_characters_enabled),
-          auto_update_story_memory_enabled: Boolean(autoUpdateForm.auto_update_story_memory_enabled),
-          auto_update_graph_enabled: Boolean(autoUpdateForm.auto_update_graph_enabled),
-          auto_update_vector_enabled: Boolean(autoUpdateForm.auto_update_vector_enabled),
-          auto_update_search_enabled: Boolean(autoUpdateForm.auto_update_search_enabled),
-          auto_update_fractal_enabled: Boolean(autoUpdateForm.auto_update_fractal_enabled),
-          auto_update_tables_enabled: Boolean(autoUpdateForm.auto_update_tables_enabled),
-        }),
-      });
-      const settings = res.data.settings;
-      setBaselineSettings(settings);
-      setAutoUpdateForm({
-        auto_update_worldbook_enabled: Boolean(settings.auto_update_worldbook_enabled ?? true),
-        auto_update_characters_enabled: Boolean(settings.auto_update_characters_enabled ?? true),
-        auto_update_story_memory_enabled: Boolean(settings.auto_update_story_memory_enabled ?? true),
-        auto_update_graph_enabled: Boolean(settings.auto_update_graph_enabled ?? true),
-        auto_update_vector_enabled: Boolean(settings.auto_update_vector_enabled ?? true),
-        auto_update_search_enabled: Boolean(settings.auto_update_search_enabled ?? true),
-        auto_update_fractal_enabled: Boolean(settings.auto_update_fractal_enabled ?? true),
-        auto_update_tables_enabled: Boolean(settings.auto_update_tables_enabled ?? true),
-      });
-      toast.toastSuccess("自动化任务配置已保存");
-    } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
-    } finally {
-      setSavingAutoUpdate(false);
-    }
-  }, [autoUpdateDirty, autoUpdateForm, baselineSettings, projectId, toast]);
-
-  const saveQueryPreprocessing = useCallback(async (): Promise<boolean> => {
-    if (!projectId) return false;
-    if (!baselineSettings) return false;
-    if (!qpDirty) return true;
-
-    const tags = qpTags
-      .split(/\r?\n/)
-      .map((v) => v.trim())
-      .filter(Boolean);
-    const exclusionRules = qpExclusionRules
-      .split(/\r?\n/)
-      .map((v) => v.trim())
-      .filter(Boolean);
-
-    if (tags.length > 50) {
-      toast.toastError("tags 最多 50 条");
-      return false;
-    }
-    if (exclusionRules.length > 50) {
-      toast.toastError("exclusion_rules 最多 50 条");
-      return false;
-    }
-
-    setSavingVector(true);
-    try {
-      const res = await apiJson<{ settings: ProjectSettings }>(`/api/projects/${projectId}/settings`, {
-        method: "PUT",
-        body: JSON.stringify({
-          query_preprocessing: {
-            enabled: qpEnabled,
-            tags,
-            exclusion_rules: exclusionRules,
-            index_ref_enhance: qpIndexRefEnhance,
-          },
-        }),
-      });
-      setBaselineSettings(res.data.settings);
-      toast.toastSuccess("查询预处理配置已保存");
-      return true;
-    } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
-      return false;
-    } finally {
-      setSavingVector(false);
-    }
-  }, [projectId, baselineSettings, qpDirty, qpEnabled, qpTags, qpExclusionRules, qpIndexRefEnhance, toast]);
-
-  const runEmbeddingDryRun = useCallback(async () => {
-    if (!projectId) return;
-    if (savingVector || embeddingDryRunLoading || rerankDryRunLoading) return;
-
-    if (vectorRagDirty || vectorApiKeyDirty || rerankApiKeyDirty) {
-      toast.toastError("请先保存 RAG 配置后再测试（测试使用已保存配置）");
-      return;
-    }
-
-    setEmbeddingDryRunLoading(true);
-    setEmbeddingDryRunError(null);
-    try {
-      const res = await apiJson<{ result: VectorEmbeddingDryRunResult }>(
-        `/api/projects/${projectId}/vector/embeddings/dry-run`,
-        {
-          method: "POST",
-          body: JSON.stringify({ text: "hello world" }),
-        },
-      );
-      setEmbeddingDryRun({ requestId: res.request_id, result: res.data.result });
-      toast.toastSuccess("Embedding 测试已完成", res.request_id);
-    } catch (e) {
-      const err = e as ApiError;
-      setEmbeddingDryRunError({ message: err.message, code: err.code, requestId: err.requestId });
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
-    } finally {
-      setEmbeddingDryRunLoading(false);
-    }
-  }, [
-    embeddingDryRunLoading,
-    projectId,
-    rerankApiKeyDirty,
-    rerankDryRunLoading,
-    savingVector,
-    toast,
-    vectorApiKeyDirty,
-    vectorRagDirty,
-  ]);
-
-  const runRerankDryRun = useCallback(async () => {
-    if (!projectId) return;
-    if (savingVector || embeddingDryRunLoading || rerankDryRunLoading) return;
-
-    if (vectorRagDirty || vectorApiKeyDirty || rerankApiKeyDirty) {
-      toast.toastError("请先保存 RAG 配置后再测试（测试使用已保存配置）");
-      return;
-    }
-
-    setRerankDryRunLoading(true);
-    setRerankDryRunError(null);
-    try {
-      const res = await apiJson<{ result: VectorRerankDryRunResult }>(
-        `/api/projects/${projectId}/vector/rerank/dry-run`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            query_text: "dragon castle",
-            documents: ["apple banana", "dragon castle"],
-          }),
-        },
-      );
-      setRerankDryRun({ requestId: res.request_id, result: res.data.result });
-      toast.toastSuccess("Rerank 测试已完成", res.request_id);
-    } catch (e) {
-      const err = e as ApiError;
-      setRerankDryRunError({ message: err.message, code: err.code, requestId: err.requestId });
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
-    } finally {
-      setRerankDryRunLoading(false);
-    }
-  }, [
-    embeddingDryRunLoading,
-    projectId,
-    rerankApiKeyDirty,
-    rerankDryRunLoading,
-    savingVector,
-    toast,
-    vectorApiKeyDirty,
-    vectorRagDirty,
-  ]);
-
-  const selectProfile = useCallback(
-    async (profileId: string | null) => {
-      if (!projectId) return;
-      if (profileBusy) return;
-      if (profileId === selectedProfileId) return;
-
-      if (dirty) {
-        const choice = await confirm.choose({
-          title: "当前有未保存修改，是否切换配置？",
-          description: "切换后会刷新表单；建议先保存。",
-          confirmText: "保存并切换",
-          secondaryText: "不保存切换",
-          cancelText: "取消",
-        });
-        if (choice === "cancel") return;
-        if (choice === "confirm") {
-          const ok = await saveAllDirtyModules();
-          if (!ok) return;
-        }
-      }
-
-      setProfileBusy(true);
-      try {
-        await apiJson<{ project: Project }>(`/api/projects/${projectId}`, {
-          method: "PUT",
-          body: JSON.stringify({ llm_profile_id: profileId }),
-        });
-        await reloadAll();
-        await refreshWizard();
-        toast.toastSuccess("已切换配置");
-      } catch (e) {
-        const err = e as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
-      } finally {
-        setProfileBusy(false);
-      }
-    },
-    [confirm, dirty, profileBusy, projectId, reloadAll, refreshWizard, saveAllDirtyModules, selectedProfileId, toast],
-  );
-
-  const createProfile = useCallback(async () => {
-    if (!projectId) return;
-    if (profileBusy) return;
-    const name = profileName.trim();
-    if (!name) {
-      toast.toastError("请先填写“新建配置名”");
-      return;
-    }
-    const payload = buildPresetPayload(llmForm);
-    if (!payload.ok) {
-      toast.toastError(payload.message);
-      return;
-    }
-
-    setProfileBusy(true);
-    try {
-      const apiKeyInput = apiKey.trim();
-      const res = await apiJson<{ profile: LLMProfile }>(`/api/llm_profiles`, {
-        method: "POST",
-        body: JSON.stringify({
-          name,
-          provider: payload.payload.provider,
-          base_url: payload.payload.base_url,
-          model: payload.payload.model,
-          temperature: payload.payload.temperature,
-          top_p: payload.payload.top_p,
-          max_tokens: payload.payload.max_tokens,
-          presence_penalty: payload.payload.presence_penalty,
-          frequency_penalty: payload.payload.frequency_penalty,
-          top_k: payload.payload.top_k,
-          stop: payload.payload.stop,
-          timeout_seconds: payload.payload.timeout_seconds,
-          extra: payload.payload.extra,
-          api_key: apiKeyInput ? apiKeyInput : undefined,
-        }),
-      });
-      await apiJson<{ project: Project }>(`/api/projects/${projectId}`, {
-        method: "PUT",
-        body: JSON.stringify({ llm_profile_id: res.data.profile.id }),
-      });
-      setApiKey("");
-      await reloadAll();
-      await refreshWizard();
-      toast.toastSuccess("已保存为新配置并应用到项目");
-    } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
-    } finally {
-      setProfileBusy(false);
-    }
-  }, [apiKey, llmForm, profileBusy, profileName, projectId, reloadAll, refreshWizard, toast]);
-
-  const updateProfile = useCallback(async () => {
-    if (!projectId) return;
-    if (profileBusy) return;
-    if (!selectedProfileId) {
-      toast.toastError("请先选择一个后端配置");
-      return;
-    }
-    if (dirty) {
-      const ok = await saveAllDirtyModules();
-      if (!ok) return;
-    }
-    const payload = buildPresetPayload(llmForm);
-    if (!payload.ok) {
-      toast.toastError(payload.message);
-      return;
-    }
-    const name = profileName.trim();
-    setProfileBusy(true);
-    try {
-      await apiJson<{ profile: LLMProfile }>(`/api/llm_profiles/${selectedProfileId}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          name: name ? name : undefined,
-          provider: payload.payload.provider,
-          base_url: payload.payload.base_url,
-          model: payload.payload.model,
-          temperature: payload.payload.temperature,
-          top_p: payload.payload.top_p,
-          max_tokens: payload.payload.max_tokens,
-          presence_penalty: payload.payload.presence_penalty,
-          frequency_penalty: payload.payload.frequency_penalty,
-          top_k: payload.payload.top_k,
-          stop: payload.payload.stop,
-          timeout_seconds: payload.payload.timeout_seconds,
-          extra: payload.payload.extra,
-        }),
-      });
-      await reloadAll();
-      toast.toastSuccess("已更新配置");
-    } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
-    } finally {
-      setProfileBusy(false);
-    }
-  }, [dirty, llmForm, profileBusy, profileName, projectId, reloadAll, saveAllDirtyModules, selectedProfileId, toast]);
-
-  const deleteProfile = useCallback(async () => {
-    if (!selectedProfileId) {
-      toast.toastError("请先选择一个后端配置");
-      return;
-    }
-    if (profileBusy) return;
-
-    const ok = await confirm.confirm({
-      title: "删除当前后端配置？",
-      description: "删除后不可恢复。项目将解除绑定，需要重新选择/新建配置并保存 Key。",
-      confirmText: "删除",
-      danger: true,
-    });
-    if (!ok) return;
-
-    setProfileBusy(true);
-    try {
-      await apiJson<Record<string, never>>(`/api/llm_profiles/${selectedProfileId}`, { method: "DELETE" });
-      setApiKey("");
-      await reloadAll();
-      await refreshWizard();
-      toast.toastSuccess("已删除配置");
-    } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
-    } finally {
-      setProfileBusy(false);
-    }
-  }, [confirm, profileBusy, reloadAll, refreshWizard, selectedProfileId, toast]);
-
-  const saveApiKeyToProfile = useCallback(async (): Promise<boolean> => {
-    if (!selectedProfileId) {
-      toast.toastError("请先选择或新建一个后端配置");
-      return false;
-    }
-    const key = apiKey.trim();
-    if (!key) {
-      toast.toastError("请先填写 API Key");
-      return false;
-    }
-    if (profileBusy) return false;
-
-    setProfileBusy(true);
-    try {
-      await apiJson<{ profile: LLMProfile }>(`/api/llm_profiles/${selectedProfileId}`, {
-        method: "PUT",
-        body: JSON.stringify({ api_key: key }),
-      });
-      setApiKey("");
-      await reloadAll();
-      await refreshWizard();
-      bumpWizardLocal();
-      toast.toastSuccess("已保存 Key");
-      return true;
-    } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
-      return false;
-    } finally {
-      setProfileBusy(false);
-    }
-  }, [apiKey, bumpWizardLocal, profileBusy, refreshWizard, reloadAll, selectedProfileId, toast]);
-
-  const clearApiKeyInProfile = useCallback(async () => {
-    if (!selectedProfileId) {
-      toast.toastError("请先选择一个后端配置");
-      return;
-    }
-    if (profileBusy) return;
-
-    const ok = await confirm.confirm({
-      title: "清除 API Key？",
-      description: "清除后将无法生成/测试连接，直到重新保存 Key。",
-      confirmText: "清除",
-      danger: true,
-    });
-    if (!ok) return;
-
-    setProfileBusy(true);
-    try {
-      await apiJson<{ profile: LLMProfile }>(`/api/llm_profiles/${selectedProfileId}`, {
-        method: "PUT",
-        body: JSON.stringify({ api_key: null }),
-      });
-      setApiKey("");
-      await reloadAll();
-      await refreshWizard();
-      bumpWizardLocal();
-      toast.toastSuccess("已清除 Key");
-    } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
-    } finally {
-      setProfileBusy(false);
-    }
-  }, [bumpWizardLocal, confirm, profileBusy, refreshWizard, reloadAll, selectedProfileId, toast]);
-
-  const saveTaskApiKey = useCallback(
-    async (taskKey: string): Promise<boolean> => {
-      const draft = taskDrafts[taskKey];
-      if (!draft) return false;
-      const profileId = (draft.llm_profile_id ?? selectedProfileId ?? "").trim();
-      if (!profileId) {
-        toast.toastError("请先为该任务绑定配置库，或先设置主配置");
-        return false;
-      }
-      const profile = profiles.find((item) => item.id === profileId) ?? null;
-      if (!profile) {
-        toast.toastError("生效配置库不存在，请刷新后重试");
-        return false;
-      }
-
-      const key = (taskApiKeyDrafts[taskKey] ?? "").trim();
-      if (!key) {
-        toast.toastError("请先填写 API Key");
-        return false;
-      }
-      if (taskProfileBusy[taskKey]) return false;
-
-      setTaskProfileBusy((prev) => ({ ...prev, [taskKey]: true }));
-      try {
-        const res = await apiJson<{ profile: LLMProfile }>(`/api/llm_profiles/${profileId}`, {
-          method: "PUT",
-          body: JSON.stringify({ api_key: key }),
-        });
-        upsertProfile(res.data.profile);
-        setTaskApiKeyDrafts((prev) => ({ ...prev, [taskKey]: "" }));
-        await refreshWizard();
-        bumpWizardLocal();
-        toast.toastSuccess(`配置库「${profile.name}」Key 已保存`, res.request_id);
-        return true;
-      } catch (e) {
-        const err = e as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
-        return false;
-      } finally {
-        setTaskProfileBusy((prev) => ({ ...prev, [taskKey]: false }));
-      }
-    },
-    [
-      bumpWizardLocal,
-      profiles,
-      refreshWizard,
-      selectedProfileId,
-      taskApiKeyDrafts,
-      taskDrafts,
-      taskProfileBusy,
-      toast,
-      upsertProfile,
-    ],
-  );
-
-  const clearTaskApiKey = useCallback(
-    async (taskKey: string): Promise<boolean> => {
-      const draft = taskDrafts[taskKey];
-      if (!draft) return false;
-      const profileId = (draft.llm_profile_id ?? selectedProfileId ?? "").trim();
-      if (!profileId) {
-        toast.toastError("请先为该任务绑定配置库，或先设置主配置");
-        return false;
-      }
-      const profile = profiles.find((item) => item.id === profileId) ?? null;
-      if (!profile) {
-        toast.toastError("生效配置库不存在，请刷新后重试");
-        return false;
-      }
-      if (!profile?.has_api_key) return true;
-      if (taskProfileBusy[taskKey]) return false;
-
-      const taskLabel = taskCatalogByKey.get(taskKey)?.label ?? taskKey;
-      const ok = await confirm.confirm({
-        title: "清除任务模块绑定配置的 API Key？",
-        description: `将清除配置库「${profile.name}」的 Key。该配置库被其他模块复用时也会立即失效。`,
-        confirmText: "清除",
-        cancelText: "取消",
-        danger: true,
-      });
-      if (!ok) return false;
-
-      setTaskProfileBusy((prev) => ({ ...prev, [taskKey]: true }));
-      try {
-        const res = await apiJson<{ profile: LLMProfile }>(`/api/llm_profiles/${profileId}`, {
-          method: "PUT",
-          body: JSON.stringify({ api_key: null }),
-        });
-        upsertProfile(res.data.profile);
-        setTaskApiKeyDrafts((prev) => ({ ...prev, [taskKey]: "" }));
-        await refreshWizard();
-        bumpWizardLocal();
-        toast.toastSuccess(`模块「${taskLabel}」绑定配置的 Key 已清除`, res.request_id);
-        return true;
-      } catch (e) {
-        const err = e as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
-        return false;
-      } finally {
-        setTaskProfileBusy((prev) => ({ ...prev, [taskKey]: false }));
-      }
-    },
-    [
-      bumpWizardLocal,
-      confirm,
-      profiles,
-      refreshWizard,
-      selectedProfileId,
-      taskCatalogByKey,
-      taskDrafts,
-      taskProfileBusy,
-      toast,
-      upsertProfile,
-    ],
-  );
-
-  const testTaskConnection = useCallback(
-    async (taskKey: string): Promise<boolean> => {
-      if (!projectId) return false;
-      const draft = taskDrafts[taskKey];
-      if (!draft) return false;
-
-      const payload = buildPresetPayload(draft.form);
-      if (!payload.ok) {
-        toast.toastError(payload.message);
-        return false;
-      }
-
-      const boundProfileId = (draft.llm_profile_id ?? "").trim() || null;
-      const boundProfile = boundProfileId ? (profiles.find((item) => item.id === boundProfileId) ?? null) : null;
-      if (boundProfileId && !boundProfile) {
-        toast.toastError("任务模块绑定的配置库不存在，请重新选择");
-        return false;
-      }
-      const effectiveProfile = boundProfile ?? selectedProfile;
-      if (!effectiveProfile) {
-        toast.toastError("请先为任务模块绑定配置库，或先设置主配置并保存 Key");
-        return false;
-      }
-      if (effectiveProfile.provider !== payload.payload.provider) {
-        if (boundProfile) {
-          toast.toastError("任务模块 provider 必须与所选 API 配置库 provider 一致");
-        } else {
-          toast.toastError("当前任务未绑定配置库，将回退主配置。请保持 provider 一致，或为任务绑定独立配置库");
-        }
-        return false;
-      }
-      if (!effectiveProfile.has_api_key) {
-        toast.toastError("请先保存该任务生效配置的 API Key");
-        return false;
-      }
-
-      const model = payload.payload.model.trim();
-      const baseUrl = payload.payload.base_url;
-      const taskLabel = taskCatalogByKey.get(taskKey)?.label ?? taskKey;
-
-      setTaskTesting((prev) => ({ ...prev, [taskKey]: true }));
-      try {
-        const res = await apiJson<{ latency_ms: number; text?: string }>("/api/llm/test", {
-          method: "POST",
-          headers: {
-            "X-LLM-Provider": payload.payload.provider,
-          },
-          body: JSON.stringify({
-            project_id: projectId,
-            profile_id: boundProfileId,
-            provider: payload.payload.provider,
-            base_url: baseUrl,
-            model,
-            timeout_seconds: parseTimeoutSecondsForTest(draft.form.timeout_seconds),
-            extra: payload.payload.extra,
-            params: {
-              temperature: payload.payload.temperature ?? 0,
-              // Some models may emit "thinking" blocks before final text; keep this > tiny to ensure we get a text preview.
-              max_tokens: 64,
-            },
-          }),
-        });
-        const preview = (res.data.text ?? "").trim();
-        toast.toastSuccess(
-          `模块「${taskLabel}」连接成功（延迟 ${res.data.latency_ms}ms${preview ? `，输出：${preview}` : ""}）`,
-          res.request_id,
-        );
-        return true;
-      } catch (e) {
-        const err = e as ApiError;
-        toast.toastError(formatLlmTestApiError(err), err.requestId);
-        return false;
-      } finally {
-        setTaskTesting((prev) => ({ ...prev, [taskKey]: false }));
-      }
-    },
-    [profiles, projectId, selectedProfile, taskCatalogByKey, taskDrafts, toast],
-  );
-
-  const testConnection = useCallback(async (): Promise<boolean> => {
-    if (!projectId) return false;
-    if (!selectedProfileId) {
-      toast.toastError("请先选择或新建一个后端配置");
-      return false;
-    }
-    const payload = buildPresetPayload(llmForm);
-    if (!payload.ok) {
-      toast.toastError(payload.message);
-      return false;
-    }
-
-    const model = payload.payload.model.trim();
-    const baseUrl = payload.payload.base_url;
-    if (!selectedProfile?.has_api_key) {
-      toast.toastError("请先保存 API Key");
-      return false;
-    }
-
-    setTesting(true);
-    try {
-      const res = await apiJson<{ latency_ms: number; text?: string }>("/api/llm/test", {
-        method: "POST",
-        headers: {
-          "X-LLM-Provider": payload.payload.provider,
-        },
-        body: JSON.stringify({
-          project_id: projectId,
-          provider: payload.payload.provider,
-          base_url: baseUrl,
-          model,
-          timeout_seconds: parseTimeoutSecondsForTest(llmForm.timeout_seconds),
-          extra: payload.payload.extra,
-          params: {
-            temperature: payload.payload.temperature ?? 0,
-            // Some models may emit "thinking" blocks before final text; keep this > tiny to ensure we get a text preview.
-            max_tokens: 64,
-          },
-        }),
-      });
-      const preview = (res.data.text ?? "").trim();
-      toast.toastSuccess(
-        `连接成功（延迟 ${res.data.latency_ms}ms${preview ? `，输出：${preview}` : ""}）`,
-        res.request_id,
-      );
-      if (projectId) {
-        markWizardLlmTestOk(projectId, payload.payload.provider, model);
-        bumpWizardLocal();
-      }
-      return true;
-    } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(formatLlmTestApiError(err), err.requestId);
-      return false;
-    } finally {
-      setTesting(false);
-    }
-  }, [bumpWizardLocal, llmForm, projectId, selectedProfile?.has_api_key, selectedProfileId, toast]);
-
-  const nextAfterLlm = useMemo(() => {
+  const testMainConnection = useCallback(async (): Promise<boolean> => {
+    if (!projectId || !mainSlotId) return false;
+    return testModuleConnection(mainSlotId);
+  }, [mainSlotId, projectId, testModuleConnection]);
+const nextAfterLlm = useMemo(() => {
     const idx = wizard.progress.steps.findIndex((s) => s.key === "llm");
     if (idx < 0) return wizard.progress.nextStep;
     for (let i = idx + 1; i < wizard.progress.steps.length; i++) {
@@ -1753,13 +1074,13 @@ export function PromptsPage() {
     const saved = await saveAllDirtyModules();
     if (!saved) return false;
 
-    const ok = await testConnection();
+    const ok = await testMainConnection();
     if (!ok) return false;
 
     if (nextAfterLlm?.href) navigate(nextAfterLlm.href);
     else navigate(`/projects/${projectId}/outline`);
     return true;
-  }, [navigate, nextAfterLlm?.href, projectId, saveAllDirtyModules, testConnection]);
+  }, [navigate, nextAfterLlm?.href, projectId, saveAllDirtyModules, testMainConnection]);
 
   if (loading) {
     return (
@@ -1790,7 +1111,7 @@ export function PromptsPage() {
     );
   }
 
-  if (loadError && !project && !baselinePreset) {
+  if (loadError && !project && !baselineSettings) {
     return (
       <div className="grid gap-6 pb-24">
         <div className="error-card">
@@ -1826,7 +1147,7 @@ export function PromptsPage() {
 
   return (
     <div className="grid gap-6 pb-24">
-      {anyDirty && outletActive ? <UnsavedChangesGuard when={anyDirty} /> : null}
+      {dirty && outletActive ? <UnsavedChangesGuard when={dirty} /> : null}
 
       <nav className="flex gap-2" aria-label="模型配置 Tab">
         <button
@@ -1854,76 +1175,55 @@ export function PromptsPage() {
 
       {activeTab === "models" && (
         <>
-      <PipelineOverview
-        mainModel={llmForm.model.trim() || "（未设置）"}
-        taskModules={taskModules.map((tm) => ({
-          task_key: tm.task_key,
-          model: tm.form.model.trim() || null,
-          overridden: true,
-        }))}
-      />
-      <LlmPresetPanel
-        llmForm={llmForm}
-        setLlmForm={setLlmForm}
-        presetDirty={presetDirty}
-        saving={savingPreset}
-        testing={testing}
-        capabilities={capabilities}
-        onTestConnection={() => void testConnection()}
-        testConnectionDisabledReason={llmCtaBlockedReason}
-        onSave={() => void saveAll()}
-        mainModelList={mainModelList}
-        onReloadMainModels={reloadMainModels}
-        profiles={profiles}
-        selectedProfileId={selectedProfileId}
-        onSelectProfile={(id) => void selectProfile(id)}
-        profileName={profileName}
-        onChangeProfileName={setProfileName}
-        profileBusy={profileBusy || testing || savingPreset}
-        onCreateProfile={() => void createProfile()}
-        onUpdateProfile={() => void updateProfile()}
-        onDeleteProfile={() => void deleteProfile()}
-        apiKey={apiKey}
-        onChangeApiKey={setApiKey}
-        onSaveApiKey={() => void saveApiKeyToProfile()}
-        onClearApiKey={() => void clearApiKeyInProfile()}
-        taskModules={taskModules}
-        taskCatalog={taskCatalog}
-        addableTasks={addableTasks}
-        selectedAddTaskKey={selectedAddTaskKey}
-        onSelectAddTaskKey={setSelectedAddTaskKey}
-        onAddTaskModule={addTaskModule}
-        onTaskProfileChange={updateTaskProfile}
-        onTaskFormChange={updateTaskForm}
-        onSaveTask={(taskKey) => void saveTaskModule(taskKey)}
-        onDeleteTask={(taskKey) => void deleteTaskModule(taskKey)}
-        taskTesting={taskTesting}
-        onTestTaskConnection={(taskKey) => void testTaskConnection(taskKey)}
-        taskApiKeyDrafts={taskApiKeyDrafts}
-        onTaskApiKeyDraftChange={updateTaskApiKeyDraft}
-        taskProfileBusy={taskProfileBusy}
-        onSaveTaskApiKey={(taskKey) => void saveTaskApiKey(taskKey)}
-        onClearTaskApiKey={(taskKey) => void clearTaskApiKey(taskKey)}
-        onReloadTaskModels={reloadTaskModels}
-      />
+          <PipelineOverview
+            mainModel={mainForm.model.trim() || "（未设置）"}
+            taskModules={taskModules.map((tm) => ({
+              task_key: tm.task_key,
+              model: tm.form.model.trim() || null,
+              overridden: true,
+            }))}
+          />
+          <LlmPresetPanel
+            moduleCards={moduleCards}
+            moduleOptions={moduleSlots}
+            mainSlotId={mainSlotId}
+            capabilities={capabilities}
+            onModuleNameChange={updateModuleName}
+            onModuleFormChange={updateModuleForm}
+            onSaveModule={(slotId) => void saveModule(slotId)}
+            onDeleteModule={(slotId) => void deleteModule(slotId)}
+            onReloadModuleModels={(slotId) => void loadModuleModels(slotId)}
+            onTestModuleConnection={(slotId) => void testModuleConnection(slotId)}
+            onAddModule={() => void addModule()}
+            onModuleApiKeyDraftChange={updateModuleApiKeyDraft}
+            onSaveModuleApiKey={(slotId) => void saveModuleApiKey(slotId)}
+            onClearModuleApiKey={(slotId) => void clearModuleApiKey(slotId)}
+            taskModules={taskModules}
+            taskCatalog={taskCatalog}
+            onAddTaskModule={addTaskModule}
+            onTaskModuleChange={updateTaskModule}
+            onTaskFormChange={updateTaskForm}
+            onSaveTask={(taskKey) => void saveTaskModule(taskKey)}
+            onDeleteTask={(taskKey) => void deleteTaskModule(taskKey)}
+          />
 
-      <div className="surface p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-semibold">提示词工作室（beta）</div>
-            <div className="text-xs text-subtext">提示词仅在「提示词工作室」中编辑/预览（与实际发送一致）。</div>
+          <div className="surface p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold">提示词工作室（beta）</div>
+                <div className="text-xs text-subtext">提示词仅在「提示词工作室」中编辑/预览（与实际发送一致）。</div>
+              </div>
+              <button
+                className="btn btn-secondary"
+                onClick={() => navigate(`/projects/${projectId}/prompt-studio`)}
+                type="button"
+              >
+                打开提示词工作室
+              </button>
+            </div>
           </div>
-          <button
-            className="btn btn-secondary"
-            onClick={() => navigate(`/projects/${projectId}/prompt-studio`)}
-            type="button"
-          >
-            打开提示词工作室
-          </button>
-        </div>
-      </div>
 
-      <div className="text-xs text-subtext">快捷键：Ctrl/Cmd + S 保存（仅保存 LLM 配置）</div>
+          <div className="text-xs text-subtext">快捷键：Ctrl/Cmd + S 保存（仅保存 LLM 配置）</div>
         </>
       )}
 
@@ -2585,7 +1885,7 @@ export function PromptsPage() {
           saving={savingAutoUpdate}
           dirty={autoUpdateDirty}
           onSave={() => void saveAutoUpdate()}
-          mainModel={llmForm.model.trim() || "（未设置）"}
+          mainModel={mainForm.model.trim() || "（未设置）"}
           taskModules={taskModules.map((tm) => ({ task_key: tm.task_key, model: tm.form.model.trim() || null }))}
         />
       )}
@@ -2595,13 +1895,14 @@ export function PromptsPage() {
         currentStep="llm"
         progress={wizard.progress}
         loading={wizard.loading}
-        dirty={anyDirty}        saving={savingPreset || testing}
-        onSave={saveAll}
+        dirty={dirty}
+        saving={llmBusy}
+        onSave={saveAllDirtyModules}
         primaryAction={
           wizard.progress.nextStep?.key === "llm"
             ? {
                 label: llmCtaBlockedReason ?? `测试连接并下一步：${nextAfterLlm ? nextAfterLlm.title : "继续"}`,
-                disabled: Boolean(savingPreset || testing || llmCtaBlockedReason),
+                disabled: Boolean(llmBusy || llmCtaBlockedReason),
                 onClick: testAndGoNext,
               }
             : undefined

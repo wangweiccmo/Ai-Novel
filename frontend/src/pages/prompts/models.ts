@@ -115,6 +115,18 @@ export type LlmPresetPayload = {
   extra: Record<string, unknown>;
 };
 
+export type TaskOverridePayload = {
+  temperature: number | null;
+  top_p: number | null;
+  max_tokens: number | null;
+  presence_penalty: number | null;
+  frequency_penalty: number | null;
+  top_k: number | null;
+  stop: string[];
+  timeout_seconds: number | null;
+  extra: Record<string, unknown>;
+};
+
 type BuildPayloadResult = { ok: true; payload: LlmPresetPayload } | { ok: false; message: string };
 
 type LoadedVectorFormState = {
@@ -359,6 +371,25 @@ export function formFromProfile(profile: LLMProfile): LlmForm {
   return formFromPreset(syntheticPreset);
 }
 
+export function payloadFromProfile(profile: LLMProfile): LlmPresetPayload {
+  const syntheticPreset: LLMPreset = {
+    project_id: "",
+    provider: profile.provider,
+    base_url: profile.base_url ?? "",
+    model: profile.model,
+    temperature: profile.temperature ?? null,
+    top_p: profile.top_p ?? null,
+    max_tokens: profile.max_tokens ?? null,
+    presence_penalty: profile.presence_penalty ?? null,
+    frequency_penalty: profile.frequency_penalty ?? null,
+    top_k: profile.top_k ?? null,
+    stop: profile.stop ?? [],
+    timeout_seconds: profile.timeout_seconds ?? null,
+    extra: profile.extra ?? {},
+  };
+  return payloadFromPreset(syntheticPreset);
+}
+
 export function payloadFromPreset(preset: LLMPreset | LLMTaskPreset): LlmPresetPayload {
   const form = formFromPreset(preset);
   const result = buildPresetPayload(form);
@@ -379,7 +410,90 @@ export function payloadFromPreset(preset: LLMPreset | LLMTaskPreset): LlmPresetP
   };
 }
 
+export function buildTaskOverridePayload(
+  form: {
+    temperature: string;
+    top_p: string;
+    max_tokens: string;
+    presence_penalty: string;
+    frequency_penalty: string;
+    top_k: string;
+    stop: string;
+    timeout_seconds: string;
+    extra: string;
+  },
+): { ok: true; payload: TaskOverridePayload } | { ok: false; message: string } {
+  const parsed = (() => {
+    try {
+      return JSON.parse(form.extra || "{}") as unknown;
+    } catch {
+      return null;
+    }
+  })();
+  if (!isRecord(parsed)) return { ok: false, message: "extra 必须是合法 JSON object" };
+
+  const stop = parseStopList(form.stop);
+  return {
+    ok: true,
+    payload: {
+      temperature: parseNumber(form.temperature),
+      top_p: parseNumber(form.top_p),
+      max_tokens: parseNumber(form.max_tokens),
+      presence_penalty: parseNumber(form.presence_penalty),
+      frequency_penalty: parseNumber(form.frequency_penalty),
+      top_k: parseNumber(form.top_k),
+      stop,
+      timeout_seconds: parseTimeoutSecondsForPreset(form.timeout_seconds),
+      extra: parsed,
+    },
+  };
+}
+
+export function overrideFormFromPreset(preset: LLMTaskPreset): {
+  temperature: string;
+  top_p: string;
+  max_tokens: string;
+  presence_penalty: string;
+  frequency_penalty: string;
+  top_k: string;
+  stop: string;
+  timeout_seconds: string;
+  extra: string;
+} {
+  return {
+    temperature: preset.temperature?.toString() ?? "",
+    top_p: preset.top_p?.toString() ?? "",
+    max_tokens: preset.max_tokens?.toString() ?? "",
+    presence_penalty: preset.presence_penalty?.toString() ?? "",
+    frequency_penalty: preset.frequency_penalty?.toString() ?? "",
+    top_k: preset.top_k?.toString() ?? "",
+    stop: (preset.stop ?? []).join(", "),
+    timeout_seconds: preset.timeout_seconds?.toString() ?? "",
+    extra: JSON.stringify(isRecord(preset.extra) ? preset.extra : {}, null, 2),
+  };
+}
+
+export function overridePayloadFromPreset(preset: LLMTaskPreset): TaskOverridePayload {
+  const extra = isRecord(preset.extra) ? preset.extra : {};
+  const stop = preset.stop ?? [];
+  return {
+    temperature: preset.temperature ?? null,
+    top_p: preset.top_p ?? null,
+    max_tokens: preset.max_tokens ?? null,
+    presence_penalty: preset.presence_penalty ?? null,
+    frequency_penalty: preset.frequency_penalty ?? null,
+    top_k: preset.top_k ?? null,
+    stop,
+    timeout_seconds: preset.timeout_seconds ?? null,
+    extra,
+  };
+}
+
 export function payloadEquals(left: LlmPresetPayload, right: LlmPresetPayload): boolean {
+  return stableJson(left) === stableJson(right);
+}
+
+export function overridePayloadEquals(left: TaskOverridePayload, right: TaskOverridePayload): boolean {
   return stableJson(left) === stableJson(right);
 }
 

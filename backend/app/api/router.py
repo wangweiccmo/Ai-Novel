@@ -21,6 +21,7 @@ from app.api.routes import (
     llm_preset,
     llm_profiles,
     llm_task_presets,
+    project_modules,
     mcp,
     metrics,
     memory,
@@ -65,6 +66,7 @@ api_router.include_router(llm_capabilities.router, tags=["llm_capabilities"])
 api_router.include_router(llm_models.router, tags=["llm_models"])
 api_router.include_router(llm.router, tags=["llm"])
 api_router.include_router(llm_profiles.router, tags=["llm_profiles"])
+api_router.include_router(project_modules.router, tags=["project_modules"])
 api_router.include_router(outlines.router, tags=["outlines"])
 api_router.include_router(metrics.router, tags=["metrics"])
 api_router.include_router(export.router, tags=["export"])

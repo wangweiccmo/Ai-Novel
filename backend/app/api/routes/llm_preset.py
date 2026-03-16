@@ -1,13 +1,23 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from fastapi import APIRouter, Request
+from sqlalchemy import select
 
 from app.api.deps import DbDep, UserIdDep, require_project_editor
-from app.core.errors import ok_payload
+from app.api.routes.llm_profiles import _sync_bound_project_presets
+from app.core.errors import AppError, ok_payload
 from app.models.llm_preset import LLMPreset
+from app.models.llm_profile import LLMProfile
+from app.models.project_module_slot import ProjectModuleSlot
 from app.schemas.llm_preset import LLMPresetOut, LLMPresetPutRequest
 from app.services.llm_contract_service import capability_contract, normalize_base_url_for_provider, normalize_max_tokens_for_provider, normalize_provider_model
-from app.services.llm_profile_template import decode_extra_json, decode_stop_json, encode_extra_json, encode_stop_json
+from app.services.llm_profile_template import (
+    DEFAULT_TIMEOUT_SECONDS,
+    decode_extra_json,
+    decode_stop_json,
+    encode_extra_json,
+    encode_stop_json,
+)
 
 router = APIRouter()
 
@@ -26,7 +36,7 @@ def _default_preset(project_id: str) -> LLMPreset:
         frequency_penalty=0.0,
         top_k=None,
         stop_json="[]",
-        timeout_seconds=180,
+        timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
         extra_json="{}",
     )
 
@@ -58,10 +68,49 @@ def _to_out(row: LLMPreset) -> dict:
     ).model_dump()
 
 
+def _get_main_slot(db: DbDep, *, project_id: str) -> ProjectModuleSlot | None:
+    return (
+        db.execute(
+            select(ProjectModuleSlot)
+            .where(ProjectModuleSlot.project_id == project_id, ProjectModuleSlot.is_main.is_(True))
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+
+
+def _preset_from_profile(project_id: str, profile: LLMProfile) -> dict:
+    provider, model = normalize_provider_model(profile.provider, profile.model)
+    synthetic = LLMPreset(
+        project_id=project_id,
+        provider=provider,
+        base_url=normalize_base_url_for_provider(provider, profile.base_url),
+        model=model,
+        temperature=profile.temperature,
+        top_p=profile.top_p,
+        max_tokens=normalize_max_tokens_for_provider(provider, model, profile.max_tokens),
+        presence_penalty=profile.presence_penalty,
+        frequency_penalty=profile.frequency_penalty,
+        top_k=profile.top_k,
+        stop_json=profile.stop_json,
+        timeout_seconds=profile.timeout_seconds,
+        extra_json=profile.extra_json,
+    )
+    return _to_out(synthetic)
+
+
 @router.get("/projects/{project_id}/llm_preset")
 def get_llm_preset(request: Request, db: DbDep, user_id: UserIdDep, project_id: str) -> dict:
     request_id = request.state.request_id
     require_project_editor(db, project_id=project_id, user_id=user_id)
+
+    main_slot = _get_main_slot(db, project_id=project_id)
+    if main_slot is not None:
+        profile = db.get(LLMProfile, main_slot.llm_profile_id)
+        if profile is not None:
+            return ok_payload(request_id=request_id, data={"llm_preset": _preset_from_profile(project_id, profile)})
+
     row = db.get(LLMPreset, project_id)
     if row is None:
         row = _default_preset(project_id)
@@ -80,7 +129,40 @@ def put_llm_preset(
     body: LLMPresetPutRequest,
 ) -> dict:
     request_id = request.state.request_id
-    require_project_editor(db, project_id=project_id, user_id=user_id)
+    project = require_project_editor(db, project_id=project_id, user_id=user_id)
+
+    main_slot = _get_main_slot(db, project_id=project_id)
+    if main_slot is not None:
+        profile = db.get(LLMProfile, main_slot.llm_profile_id)
+        if profile is None:
+            raise AppError.not_found()
+        if profile.owner_user_id != user_id:
+            raise AppError.forbidden()
+
+        provider, model = normalize_provider_model(body.provider, body.model)
+        profile.provider = provider
+        profile.base_url = normalize_base_url_for_provider(provider, body.base_url)
+        profile.model = model
+        profile.temperature = body.temperature
+        profile.top_p = body.top_p
+        profile.max_tokens = normalize_max_tokens_for_provider(provider, model, body.max_tokens)
+        profile.presence_penalty = body.presence_penalty
+        profile.frequency_penalty = body.frequency_penalty
+        profile.top_k = body.top_k
+        profile.stop_json = encode_stop_json(body.stop)
+        profile.timeout_seconds = int(body.timeout_seconds or DEFAULT_TIMEOUT_SECONDS)
+        profile.extra_json = encode_extra_json(body.extra)
+
+        profile.stop_json = encode_stop_json(decode_stop_json(profile.stop_json))
+        profile.extra_json = encode_extra_json(decode_extra_json(profile.extra_json))
+
+        _sync_bound_project_presets(db, profile)
+        if project.llm_profile_id != profile.id:
+            project.llm_profile_id = profile.id
+
+        db.commit()
+        db.refresh(profile)
+        return ok_payload(request_id=request_id, data={"llm_preset": _preset_from_profile(project_id, profile)})
 
     provider, model = normalize_provider_model(body.provider, body.model)
     base_url = normalize_base_url_for_provider(provider, body.base_url)

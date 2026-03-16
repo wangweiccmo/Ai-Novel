@@ -21,6 +21,10 @@ class LLMTaskPreset(Base):
         ForeignKey("llm_profiles.id", ondelete="SET NULL"),
         nullable=True,
     )
+    module_slot_id: Mapped[str | None] = mapped_column(
+        ForeignKey("project_module_slots.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     base_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     model: Mapped[str] = mapped_column(String(255), nullable=False)

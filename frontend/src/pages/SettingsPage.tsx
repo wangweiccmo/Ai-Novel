@@ -583,19 +583,19 @@ export function SettingsPage() {
         </div>
       </section>
 
-      <section className=”panel p-6”>
-        <div className=”flex items-center justify-between”>
+      <section className="panel p-6">
+        <div className="flex items-center justify-between">
           <div>
-            <div className=”font-content text-xl”>向量检索 & Rerank</div>
-            <div className=”text-xs text-subtext”>
+            <div className="font-content text-xl">向量检索 & Rerank</div>
+            <div className="text-xs text-subtext">
               向量检索配置已迁移至「模型配置 → 向量 &amp; RAG」Tab。
             </div>
           </div>
           {projectId && (
             <button
-              className=”btn btn-secondary”
+              className="btn btn-secondary"
               onClick={() => navigate(`/projects/${projectId}/prompts#rag`)}
-              type=”button”
+              type="button"
             >
               打开模型配置
             </button>
@@ -603,19 +603,19 @@ export function SettingsPage() {
         </div>
       </section>
 
-      <section className=”panel p-6”>
-        <div className=”flex items-center justify-between”>
+      <section className="panel p-6">
+        <div className="flex items-center justify-between">
           <div>
-            <div className=”font-content text-xl”>Query 预处理</div>
-            <div className=”text-xs text-subtext”>
+            <div className="font-content text-xl">Query 预处理</div>
+            <div className="text-xs text-subtext">
               Query 预处理配置已迁移至「模型配置 → 向量 &amp; RAG」Tab。
             </div>
           </div>
           {projectId && (
             <button
-              className=”btn btn-secondary”
+              className="btn btn-secondary"
               onClick={() => navigate(`/projects/${projectId}/prompts#rag`)}
-              type=”button”
+              type="button"
             >
               打开模型配置
             </button>
@@ -623,7 +623,7 @@ export function SettingsPage() {
         </div>
       </section>
 
-      <details className=”panel” aria-label=”上下文优化（Context Optimizer）”>
+      <details className="panel" aria-label="上下文优化（Context Optimizer）">
         <summary className="ui-focus-ring ui-transition-fast cursor-pointer select-none p-6">
           <div className="grid gap-1">
             <div className="font-content text-xl text-ink">上下文优化（Context Optimizer）</div>

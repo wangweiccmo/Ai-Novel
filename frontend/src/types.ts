@@ -288,6 +288,14 @@ export interface LLMProfile {
   updated_at: string;
 }
 
+export interface ModuleSlot {
+  id: string;
+  display_name: string;
+  is_main: boolean;
+  sort_order: number;
+  profile: LLMProfile;
+}
+
 export interface LLMTaskCatalogItem {
   key: string;
   label: string;
@@ -302,6 +310,9 @@ export interface LLMTaskCatalogItem {
 export interface LLMTaskPreset extends LLMPreset {
   task_key: string;
   llm_profile_id?: string | null;
+  module_slot_id?: string | null;
+  module_display_name?: string | null;
+  module_profile?: LLMProfile | null;
   source?: string;
   pricing?: {
     input_per_million?: number | null;

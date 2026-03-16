@@ -34,7 +34,8 @@
       "Bash(timeout 10 .venv/Scripts/python.exe -c \":*)",
       "Bash(xargs ls:*)",
       "Bash(npx vite:*)",
-      "Bash(grep -E \"\\\\.tsx$\")"
+      "Bash(grep -E \"\\\\.tsx$\")",
+      "Bash(npm run:*)"
     ]
   }
 }

@@ -13,6 +13,7 @@ from app.models.outline import Outline
 from app.models.project import Project
 from app.models.project_membership import ProjectMembership
 from app.models.project_settings import ProjectSettings
+from app.models.project_module_slot import ProjectModuleSlot
 from app.models.project_task import ProjectTask
 from app.models.project_task_event import ProjectTaskEvent
 from app.models.project_table import ProjectTable, ProjectTableRow
@@ -57,6 +58,7 @@ __all__ = [
     "Outline",
     "Project",
     "ProjectMembership",
+    "ProjectModuleSlot",
     "ProjectDefaultStyle",
     "ProjectSettings",
     "ProjectTask",

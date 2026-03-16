@@ -21,10 +21,22 @@ export type LlmForm = {
   extra: string;
 };
 
+export type TaskOverrideForm = {
+  temperature: string;
+  top_p: string;
+  max_tokens: string;
+  presence_penalty: string;
+  frequency_penalty: string;
+  top_k: string;
+  stop: string;
+  timeout_seconds: string;
+  extra: string;
+};
+
 export type LlmTaskFormDraft = {
   task_key: string;
-  llm_profile_id: string | null;
-  form: LlmForm;
+  module_slot_id: string | null;
+  form: TaskOverrideForm;
   isNew: boolean;
 };
 
