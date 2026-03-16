@@ -167,6 +167,7 @@ export function PromptsPage() {
   const [moduleTesting, setModuleTesting] = useState<Record<string, boolean>>({});
   const [moduleModelLists, setModuleModelLists] = useState<Record<string, LlmModelListState>>({});
   const [moduleApiKeyDrafts, setModuleApiKeyDrafts] = useState<Record<string, string>>({});
+  const [moduleApiKeySnapshots, setModuleApiKeySnapshots] = useState<Record<string, string>>({});
 
   const [capabilities, setCapabilities] = useState<LlmCapabilities | null>(null);
   const capsGuardRef = useRef(createRequestSeqGuard());
@@ -265,6 +266,7 @@ export function PromptsPage() {
       setModuleTesting({});
       setModuleModelLists({});
       setModuleApiKeyDrafts({});
+      setModuleApiKeySnapshots({});
 
       const nextTaskCatalog = taskRes.data.catalog ?? [];
       const nextTaskBaseline: Record<string, LLMTaskPreset> = {};
@@ -423,27 +425,6 @@ export function PromptsPage() {
       .sort((a, b) => a.group.localeCompare(b.group, "zh-Hans-CN") || a.label.localeCompare(b.label, "zh-Hans-CN"));
   }, [taskBaseline, taskCatalogByKey, taskDeleting, taskDrafts, taskSaving]);
 
-  const taskDirty = useMemo(() => taskModules.some((item) => item.dirty), [taskModules]);
-  const moduleDirty = useMemo(() => {
-    return moduleSlots.some((slot) => {
-      const draft = moduleDrafts[slot.id] ?? { display_name: slot.display_name, form: formFromProfile(slot.profile) };
-      if (draft.display_name !== slot.display_name) return true;
-      const payload = buildPresetPayload(draft.form);
-      if (!payload.ok) return true;
-      return !payloadEquals(payload.payload, payloadFromProfile(slot.profile));
-    });
-  }, [moduleDrafts, moduleSlots]);
-  const dirty = mainPresetDirty || taskDirty || moduleDirty;
-  const llmSaving = useMemo(
-    () =>
-      Object.values(moduleSaving).some(Boolean) ||
-      Object.values(taskSaving).some(Boolean) ||
-      Object.values(taskDeleting).some(Boolean),
-    [moduleSaving, taskDeleting, taskSaving],
-  );
-  const llmTesting = useMemo(() => Object.values(moduleTesting).some(Boolean), [moduleTesting]);
-  const llmBusy = llmSaving || llmTesting;
-
   const vectorRagDirty = useMemo(() => {
     if (!baselineSettings) return false;
     const baseline = mapVectorFormFromSettings(baselineSettings);
@@ -476,24 +457,37 @@ export function PromptsPage() {
 
   const llmCtaBlockedReason = useMemo(() => {
     if (!mainSlot) return "请先创建主模块";
-    if (!mainSlot.profile.has_api_key) return "请先保存 API Key";
+    const draftKey = (moduleApiKeyDrafts[mainSlot.id] ?? "").trim();
+    if (!mainSlot.profile.has_api_key && !draftKey) return "请先保存 API Key";
     return null;
-  }, [mainSlot]);
+  }, [mainSlot, moduleApiKeyDrafts]);
 
   const getModuleDraft = useCallback(
     (slot: ModuleSlot) => moduleDrafts[slot.id] ?? { display_name: slot.display_name, form: formFromProfile(slot.profile) },
     [moduleDrafts],
   );
 
+  const isModuleApiKeyDirty = useCallback(
+    (slotId: string) => {
+      const draft = (moduleApiKeyDrafts[slotId] ?? "").trim();
+      if (!draft) return false;
+      const snapshot = moduleApiKeySnapshots[slotId];
+      if (snapshot === undefined) return true;
+      return draft !== snapshot;
+    },
+    [moduleApiKeyDrafts, moduleApiKeySnapshots],
+  );
+
   const isModuleDirty = useCallback(
     (slot: ModuleSlot) => {
       const draft = getModuleDraft(slot);
       if (draft.display_name !== slot.display_name) return true;
+      if (isModuleApiKeyDirty(slot.id)) return true;
       const payload = buildPresetPayload(draft.form);
       if (!payload.ok) return true;
       return !payloadEquals(payload.payload, payloadFromProfile(slot.profile));
     },
-    [getModuleDraft],
+    [getModuleDraft, isModuleApiKeyDirty],
   );
 
   const moduleCards = useMemo(
@@ -511,10 +505,24 @@ export function PromptsPage() {
           testing: Boolean(moduleTesting[slot.id]),
           modelList: moduleModelLists[slot.id] ?? EMPTY_MODEL_LIST_STATE,
           apiKeyDraft: moduleApiKeyDrafts[slot.id] ?? "",
+          apiKeyDirty: isModuleApiKeyDirty(slot.id),
         };
       }),
-    [getModuleDraft, isModuleDirty, moduleApiKeyDrafts, moduleModelLists, moduleSaving, moduleSlots, moduleTesting],
+    [getModuleDraft, isModuleDirty, isModuleApiKeyDirty, moduleApiKeyDrafts, moduleModelLists, moduleSaving, moduleSlots, moduleTesting],
   );
+
+  const taskDirty = useMemo(() => taskModules.some((item) => item.dirty), [taskModules]);
+  const moduleDirty = useMemo(() => moduleSlots.some((slot) => isModuleDirty(slot)), [isModuleDirty, moduleSlots]);
+  const dirty = mainPresetDirty || taskDirty || moduleDirty;
+  const llmSaving = useMemo(
+    () =>
+      Object.values(moduleSaving).some(Boolean) ||
+      Object.values(taskSaving).some(Boolean) ||
+      Object.values(taskDeleting).some(Boolean),
+    [moduleSaving, taskDeleting, taskSaving],
+  );
+  const llmTesting = useMemo(() => Object.values(moduleTesting).some(Boolean), [moduleTesting]);
+  const llmBusy = llmSaving || llmTesting;
 
   const updateModuleName = useCallback((slotId: string, value: string) => {
     setModuleDrafts((prev) => {
@@ -557,6 +565,7 @@ export function PromptsPage() {
       const draft = moduleDrafts[slotId];
       const snapshot = opts?.snapshot ?? draft?.form ?? formFromProfile(slot.profile);
       const displayName = opts?.displayName ?? draft?.display_name ?? slot.display_name;
+      const apiKeyDraft = (moduleApiKeyDrafts[slotId] ?? "").trim();
 
       const payload = buildPresetPayload(snapshot);
       if (!payload.ok) {
@@ -571,24 +580,26 @@ export function PromptsPage() {
 
       setModuleSaving((prev) => ({ ...prev, [slotId]: true }));
       try {
+        const profileUpdate = {
+          provider: payload.payload.provider,
+          base_url: payload.payload.base_url,
+          model: payload.payload.model,
+          temperature: payload.payload.temperature,
+          top_p: payload.payload.top_p,
+          max_tokens: payload.payload.max_tokens,
+          presence_penalty: payload.payload.presence_penalty,
+          frequency_penalty: payload.payload.frequency_penalty,
+          top_k: payload.payload.top_k,
+          stop: payload.payload.stop,
+          timeout_seconds: payload.payload.timeout_seconds,
+          extra: payload.payload.extra,
+          ...(apiKeyDraft ? { api_key: apiKeyDraft } : {}),
+        };
         const res = await apiJson<{ module: ModuleSlot }>(`/api/projects/${projectId}/modules/${slotId}`, {
           method: "PUT",
           body: JSON.stringify({
             display_name: displayName,
-            profile_update: {
-              provider: payload.payload.provider,
-              base_url: payload.payload.base_url,
-              model: payload.payload.model,
-              temperature: payload.payload.temperature,
-              top_p: payload.payload.top_p,
-              max_tokens: payload.payload.max_tokens,
-              presence_penalty: payload.payload.presence_penalty,
-              frequency_penalty: payload.payload.frequency_penalty,
-              top_k: payload.payload.top_k,
-              stop: payload.payload.stop,
-              timeout_seconds: payload.payload.timeout_seconds,
-              extra: payload.payload.extra,
-            },
+            profile_update: profileUpdate,
           }),
         });
         const updated = res.data.module;
@@ -597,7 +608,9 @@ export function PromptsPage() {
           ...prev,
           [updated.id]: { display_name: updated.display_name, form: formFromProfile(updated.profile) },
         }));
-        setModuleApiKeyDrafts((prev) => ({ ...prev, [updated.id]: "" }));
+        if (apiKeyDraft) {
+          setModuleApiKeySnapshots((prev) => ({ ...prev, [updated.id]: apiKeyDraft }));
+        }
 
         if (silent) scheduleWizardRefresh();
         else {
@@ -613,7 +626,7 @@ export function PromptsPage() {
         setModuleSaving((prev) => ({ ...prev, [slotId]: false }));
       }
     },
-    [moduleDrafts, moduleSlots, projectId, refreshWizard, toast],
+    [moduleApiKeyDrafts, moduleDrafts, moduleSlots, projectId, refreshWizard, toast],
   );
 
   const deleteModule = useCallback(
@@ -651,6 +664,11 @@ export function PromptsPage() {
           return next;
         });
         setModuleApiKeyDrafts((prev) => {
+          const next = { ...prev };
+          delete next[slotId];
+          return next;
+        });
+        setModuleApiKeySnapshots((prev) => {
           const next = { ...prev };
           delete next[slotId];
           return next;
@@ -713,30 +731,6 @@ export function PromptsPage() {
     }
   }, [mainForm, projectId, toast]);
 
-  const saveModuleApiKey = useCallback(
-    async (slotId: string): Promise<boolean> => {
-      if (!projectId) return false;
-      const draft = (moduleApiKeyDrafts[slotId] ?? "").trim();
-      if (!draft) return false;
-      try {
-        const res = await apiJson<{ module: ModuleSlot }>(`/api/projects/${projectId}/modules/${slotId}`, {
-          method: "PUT",
-          body: JSON.stringify({ profile_update: { api_key: draft } }),
-        });
-        const updated = res.data.module;
-        setModuleSlots((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
-        setModuleApiKeyDrafts((prev) => ({ ...prev, [slotId]: "" }));
-        toast.toastSuccess("API Key 已保存", res.request_id);
-        return true;
-      } catch (e) {
-        const err = e as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
-        return false;
-      }
-    },
-    [moduleApiKeyDrafts, projectId, toast],
-  );
-
   const clearModuleApiKey = useCallback(
     async (slotId: string): Promise<boolean> => {
       if (!projectId) return false;
@@ -747,6 +741,8 @@ export function PromptsPage() {
         });
         const updated = res.data.module;
         setModuleSlots((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+        setModuleApiKeyDrafts((prev) => ({ ...prev, [slotId]: "" }));
+        setModuleApiKeySnapshots((prev) => ({ ...prev, [slotId]: "" }));
         toast.toastSuccess("API Key 已清除", res.request_id);
         return true;
       } catch (e) {
@@ -818,16 +814,31 @@ export function PromptsPage() {
       if (!projectId) return false;
       const slot = moduleSlots.find((item) => item.id === slotId);
       if (!slot) return false;
-      const draft = moduleDrafts[slotId]?.form ?? formFromProfile(slot.profile);
-
-      if (!slot.profile.has_api_key) {
-        toast.toastError("请先保存 API Key");
-        return false;
-      }
-
+      const draftEntry = moduleDrafts[slotId];
+      const draft = draftEntry?.form ?? formFromProfile(slot.profile);
+      const apiKeyDraft = (moduleApiKeyDrafts[slotId] ?? "").trim();
       const payload = buildPresetPayload(draft);
       if (!payload.ok) {
         toast.toastError(payload.message);
+        return false;
+      }
+
+      const needsSave = isModuleDirty(slot);
+      if (needsSave) {
+        const saved = await saveModule(slotId, {
+          silent: true,
+          snapshot: draft,
+          displayName: draftEntry?.display_name ?? slot.display_name,
+        });
+        if (!saved) {
+          toast.toastError("保存失败，请检查参数");
+          return false;
+        }
+      }
+
+      const hasKey = slot.profile.has_api_key || apiKeyDraft.length > 0;
+      if (!hasKey) {
+        toast.toastError("请先保存 API Key");
         return false;
       }
 
@@ -870,7 +881,7 @@ export function PromptsPage() {
         setModuleTesting((prev) => ({ ...prev, [slotId]: false }));
       }
     },
-    [bumpWizardLocal, moduleDrafts, moduleSlots, projectId, toast],
+    [bumpWizardLocal, isModuleDirty, moduleApiKeyDrafts, moduleDrafts, moduleSlots, projectId, saveModule, toast],
   );
 
   const updateTaskForm = useCallback((taskKey: string, updater: (prev: TaskOverrideForm) => TaskOverrideForm) => {
@@ -1196,7 +1207,6 @@ const nextAfterLlm = useMemo(() => {
             onTestModuleConnection={(slotId) => void testModuleConnection(slotId)}
             onAddModule={() => void addModule()}
             onModuleApiKeyDraftChange={updateModuleApiKeyDraft}
-            onSaveModuleApiKey={(slotId) => void saveModuleApiKey(slotId)}
             onClearModuleApiKey={(slotId) => void clearModuleApiKey(slotId)}
             taskModules={taskModules}
             taskCatalog={taskCatalog}

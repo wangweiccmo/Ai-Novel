@@ -204,7 +204,7 @@ export function parseTimeoutSecondsForPreset(value: string): number | null {
 
 function mergeManagedAdvancedExtra(form: LlmForm, extraBase: Record<string, unknown>): BuildPayloadResult {
   const extra = cloneJsonObject(extraBase);
-  const provider = form.provider;
+  const provider = form.provider.trim();
 
   delete extra.reasoning_effort;
   delete extra.reasoningEffort;
@@ -271,7 +271,7 @@ function mergeManagedAdvancedExtra(form: LlmForm, extraBase: Record<string, unkn
   return {
     ok: true,
     payload: {
-      provider: form.provider,
+      provider,
       base_url: form.base_url.trim() || null,
       model: form.model.trim(),
       temperature: parseNumber(form.temperature),
@@ -288,6 +288,8 @@ function mergeManagedAdvancedExtra(form: LlmForm, extraBase: Record<string, unkn
 }
 
 export function buildPresetPayload(form: LlmForm): BuildPayloadResult {
+  const provider = form.provider.trim();
+  if (!provider) return { ok: false, message: "服务商（provider）不能为空" };
   const model = form.model.trim();
   if (!model) return { ok: false, message: "模型（model）不能为空" };
 

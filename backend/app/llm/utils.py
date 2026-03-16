@@ -20,11 +20,17 @@ def default_max_tokens_for_provider(provider: str) -> int:
     try:
         return provider_contract(provider).recommended_max_tokens
     except Exception:
-        return recommended_max_tokens(provider, model=None, mode="audit")
+        try:
+            return recommended_max_tokens(provider, model=None, mode="audit")
+        except Exception:
+            return 12000
 
 
 def default_max_tokens(provider: str, model: str | None = None) -> int:
-    return recommended_max_tokens(provider, model=model, mode="audit")
+    try:
+        return recommended_max_tokens(provider, model=model, mode="audit")
+    except Exception:
+        return 12000
 
 
 def is_default_like_max_tokens(provider: str, value: int | None) -> bool:

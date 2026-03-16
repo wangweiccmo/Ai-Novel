@@ -16,6 +16,7 @@ type ModuleCardView = {
   testing: boolean;
   modelList: LlmModelListState;
   apiKeyDraft: string;
+  apiKeyDirty: boolean;
 };
 
 type TaskOverrideView = {
@@ -51,7 +52,6 @@ type Props = {
   onTestModuleConnection: (slotId: string) => void;
   onAddModule: () => void;
   onModuleApiKeyDraftChange: (slotId: string, value: string) => void;
-  onSaveModuleApiKey: (slotId: string) => void;
   onClearModuleApiKey: (slotId: string) => void;
 
   taskModules: TaskOverrideView[];
@@ -118,14 +118,26 @@ function validateExtraJson(
   }
 }
 
-function providerLabel(provider: LLMProvider): string {
+const KNOWN_PROVIDERS = [
+  "openai",
+  "openai_responses",
+  "openai_compatible",
+  "openai_responses_compatible",
+  "OpenAI",
+  "anthropic",
+  "gemini",
+  "deepseek",
+] as const;
+
+function providerLabel(provider: string): string {
   if (provider === "openai") return "OpenAI Chat";
   if (provider === "openai_responses") return "OpenAI Responses";
   if (provider === "openai_compatible") return "OpenAI Compatible Chat";
   if (provider === "openai_responses_compatible") return "OpenAI Compatible Responses";
   if (provider === "anthropic") return "Anthropic";
+  if (provider === "gemini") return "Gemini";
   if (provider === "deepseek") return "DeepSeek";
-  return "Gemini";
+  return provider.trim() || "其它";
 }
 
 const COST_TIER_META: Record<string, { label: string; tone: BadgeTone }> = {
@@ -144,7 +156,7 @@ function formatRecommendedLabel(task: {
   recommended_provider?: LLMTaskCatalogItem["recommended_provider"];
   recommended_model?: LLMTaskCatalogItem["recommended_model"];
 }): string | null {
-  const provider = task.recommended_provider ? providerLabel(task.recommended_provider as LLMProvider) : "";
+  const provider = task.recommended_provider ? providerLabel(String(task.recommended_provider)) : "";
   const model = String(task.recommended_model || "").trim();
   if (!provider && !model) return null;
   return [provider, model].filter(Boolean).join(" / ");
@@ -175,8 +187,11 @@ function ModuleEditor(props: ModuleEditorProps) {
     ? ""
     : `extra JSON 无效${extraValidation.line ? `（第 ${extraValidation.line} 行，第 ${extraValidation.column ?? 1} 列）` : ""}：${extraValidation.message}`;
   const tokenHint = maxTokensHint(props.capabilities);
-  const responsesProvider =
-    props.form.provider === "openai_responses" || props.form.provider === "openai_responses_compatible";
+  const providerValue = props.form.provider.trim();
+  const responsesProvider = providerValue === "openai_responses" || providerValue === "openai_responses_compatible";
+  const isKnownProvider = KNOWN_PROVIDERS.includes(providerValue as (typeof KNOWN_PROVIDERS)[number]);
+  const providerSelectValue = isKnownProvider ? providerValue : "other";
+  const customProviderValue = isKnownProvider ? "" : providerValue;
 
   const onFormatExtra = useCallback(() => {
     const parsed = validateExtraJson(props.form.extra);
@@ -203,12 +218,27 @@ function ModuleEditor(props: ModuleEditorProps) {
           <select
             className="select"
             name={fieldName("provider")}
-            value={props.form.provider}
+            value={providerSelectValue}
             disabled={props.saving}
-            onChange={(e) =>
+            onChange={(e) => {
+              const next = e.target.value;
+              if (next === "other") {
+                props.setForm((v) => ({
+                  ...v,
+                  provider: KNOWN_PROVIDERS.includes(v.provider as (typeof KNOWN_PROVIDERS)[number]) ? "" : v.provider,
+                  max_tokens: "",
+                  text_verbosity: "",
+                  reasoning_effort: "",
+                  anthropic_thinking_enabled: false,
+                  anthropic_thinking_budget_tokens: "",
+                  gemini_thinking_budget: "",
+                  gemini_include_thoughts: false,
+                }));
+                return;
+              }
               props.setForm((v) => ({
                 ...v,
-                provider: e.target.value as LLMProvider,
+                provider: next as LLMProvider,
                 max_tokens: "",
                 text_verbosity: "",
                 reasoning_effort: "",
@@ -216,21 +246,37 @@ function ModuleEditor(props: ModuleEditorProps) {
                 anthropic_thinking_budget_tokens: "",
                 gemini_thinking_budget: "",
                 gemini_include_thoughts: false,
-              }))
-            }
+              }));
+            }}
           >
             <option value="openai">openai（官方）</option>
             <option value="openai_responses">openai_responses（官方 /v1/responses）</option>
             <option value="openai_compatible">openai_compatible（中转/本地）</option>
             <option value="openai_responses_compatible">openai_responses_compatible（中转 /v1/responses）</option>
+            <option value="OpenAI">GGBOOM公益站</option>
             <option value="anthropic">anthropic（Claude）</option>
             <option value="gemini">gemini</option>
             <option value="deepseek">deepseek（DeepSeek）</option>
+            <option value="other">其它（手动输入）</option>
           </select>
           <div className="text-[11px] text-subtext">
-            当前：{providerLabel(props.form.provider)}。兼容网关通常需要可访问的 `base_url`。
+            当前：{providerLabel(providerValue)}。兼容网关通常需要可访问的 `base_url`。
           </div>
         </label>
+
+        {providerSelectValue === "other" && (
+          <label className="grid gap-1 md:col-span-2">
+            <span className="text-xs text-subtext">手动输入 provider</span>
+            <input
+              className="input"
+              disabled={props.saving}
+              placeholder="例如 openai_compatible / openai-compatible / deepseek"
+              value={customProviderValue}
+              onChange={(e) => props.setForm((v) => ({ ...v, provider: e.target.value }))}
+            />
+            <div className="text-[11px] text-subtext">请输入后端支持或可识别的 provider key。</div>
+          </label>
+        )}
 
         <label className="grid gap-1">
           <span className="text-xs text-subtext">模型（model）</span>
@@ -262,7 +308,7 @@ function ModuleEditor(props: ModuleEditorProps) {
             disabled={props.saving}
             name={fieldName("base_url")}
             placeholder={
-              props.form.provider === "openai_compatible" || props.form.provider === "openai_responses_compatible"
+              providerValue === "openai_compatible" || providerValue === "openai_responses_compatible"
                 ? "https://your-gateway.example.com/v1"
                 : undefined
             }
@@ -304,7 +350,7 @@ function ModuleEditor(props: ModuleEditorProps) {
             {tokenHint ? <div className="text-[11px] text-subtext">{tokenHint}</div> : null}
           </label>
 
-          {props.form.provider === "openai" || props.form.provider === "openai_compatible" || props.form.provider === "deepseek" ? (
+          {providerValue === "openai" || providerValue === "openai_compatible" || providerValue === "deepseek" ? (
             <>
               <label className="grid gap-1">
                 <span className="text-xs text-subtext">presence_penalty</span>
@@ -351,7 +397,7 @@ function ModuleEditor(props: ModuleEditorProps) {
             />
           </label>
 
-          {(props.form.provider === "openai" || props.form.provider === "openai_compatible" || responsesProvider) && (
+          {(providerValue === "openai" || providerValue === "openai_compatible" || responsesProvider) && (
             <label className="grid gap-1">
               <span className="text-xs text-subtext">reasoning effort</span>
               <select
@@ -384,7 +430,7 @@ function ModuleEditor(props: ModuleEditorProps) {
             </label>
           )}
 
-          {props.form.provider === "anthropic" && (
+          {providerValue === "anthropic" && (
             <>
               <label className="flex items-center gap-2 md:col-span-1">
                 <input
@@ -406,7 +452,7 @@ function ModuleEditor(props: ModuleEditorProps) {
             </>
           )}
 
-          {props.form.provider === "gemini" && (
+          {providerValue === "gemini" && (
             <>
               <label className="grid gap-1 md:col-span-2">
                 <span className="text-xs text-subtext">thinkingConfig.thinkingBudget</span>
@@ -664,8 +710,9 @@ export function LlmPresetPanel(props: Props) {
             : "自定义模块可绑定到特定任务。";
           const moduleCaps = module.is_main ? props.capabilities : null;
           const profileHasKey = module.profile.has_api_key;
+          const hasDraftKey = Boolean(module.apiKeyDraft.trim());
           const maskedKey = module.profile.masked_api_key ?? "已保存";
-          const keyStatus = profileHasKey ? `已保存 ${maskedKey}` : "未保存";
+          const keyStatus = module.apiKeyDirty ? "已输入（未保存）" : profileHasKey ? `已保存 ${maskedKey}` : "未保存";
           return (
             <section key={module.slot_id} className="rounded-atelier border border-border/70 bg-canvas p-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -717,7 +764,7 @@ export function LlmPresetPanel(props: Props) {
                     </button>
                     <button
                       className="btn btn-secondary"
-                      disabled={module.testing || module.saving || !profileHasKey}
+                      disabled={module.testing || module.saving || (!profileHasKey && !hasDraftKey)}
                       onClick={() => props.onTestModuleConnection(module.slot_id)}
                       type="button"
                     >
@@ -752,21 +799,15 @@ export function LlmPresetPanel(props: Props) {
                   <input
                     className="input flex-1 min-w-[220px]"
                     disabled={module.saving}
-                    placeholder="输入新 Key（不会回显已保存 Key）"
-                    type="password"
+                    placeholder="输入 Key（保存模块时一并保存）"
+                    type="text"
                     value={module.apiKeyDraft}
                     onChange={(e) => props.onModuleApiKeyDraftChange(module.slot_id, e.target.value)}
                   />
-                  <button
-                    className="btn btn-primary btn-sm"
-                    disabled={module.saving || !module.apiKeyDraft.trim()}
-                    onClick={() => props.onSaveModuleApiKey(module.slot_id)}
-                    type="button"
-                  >
-                    保存 Key
-                  </button>
                 </div>
-                {!profileHasKey && <div className="mt-2 text-[11px] text-warning">未保存 API Key，无法测试连接。</div>}
+                {!profileHasKey && !hasDraftKey && (
+                  <div className="mt-2 text-[11px] text-warning">未保存 API Key，无法测试连接。</div>
+                )}
               </div>
             </section>
           );

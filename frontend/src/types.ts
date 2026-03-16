@@ -5,7 +5,8 @@ export type LLMProvider =
   | "openai_responses_compatible"
   | "anthropic"
   | "gemini"
-  | "deepseek";
+  | "deepseek"
+  | (string & {});
 
 export type ChapterStatus = "planned" | "drafting" | "proofreading" | "done";
 

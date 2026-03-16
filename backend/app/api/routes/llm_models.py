@@ -160,18 +160,28 @@ def list_llm_models(
     request_id = request.state.request_id
     profile = None
     project: Project | None = None
+    provider_value = str(provider or "").strip()
+    dispatch_provider = provider_value if provider_value in (
+        "openai",
+        "openai_responses",
+        "openai_compatible",
+        "openai_responses_compatible",
+        "anthropic",
+        "gemini",
+        "deepseek",
+    ) else "openai_compatible"
 
     header_key = normalize_header_api_key(x_llm_api_key)
     if profile_id:
         profile = require_owned_llm_profile(db, profile_id=profile_id, user_id=user_id)
         profile_provider, _ = normalize_provider_model(profile.provider, profile.model)
-        if profile_provider != provider:
+        if profile_provider != provider_value:
             raise AppError(code="LLM_CONFIG_ERROR", message="provider 与 profile 不一致", status_code=400)
     elif project_id:
         project = require_project_editor(db, project_id=project_id, user_id=user_id)
 
     effective_base_url = normalize_base_url_for_provider(
-        provider,
+        provider_value,
         base_url or (profile.base_url if profile is not None else None),
     )
 
@@ -196,19 +206,19 @@ def list_llm_models(
             raise
 
     timeout = httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=5.0)
-    if provider in ("openai", "openai_responses", "openai_compatible", "openai_responses_compatible", "deepseek"):
-        models = _list_openai_like_models(provider=provider, base_url=effective_base_url or "", api_key=api_key, timeout=timeout)
-    elif provider == "anthropic":
-        models = _list_anthropic_models(provider=provider, base_url=effective_base_url or "", api_key=api_key, timeout=timeout)
-    elif provider == "gemini":
-        models = _list_gemini_models(provider=provider, base_url=effective_base_url or "", api_key=api_key, timeout=timeout)
+    if dispatch_provider in ("openai", "openai_responses", "openai_compatible", "openai_responses_compatible", "deepseek"):
+        models = _list_openai_like_models(provider=dispatch_provider, base_url=effective_base_url or "", api_key=api_key, timeout=timeout)
+    elif dispatch_provider == "anthropic":
+        models = _list_anthropic_models(provider=dispatch_provider, base_url=effective_base_url or "", api_key=api_key, timeout=timeout)
+    elif dispatch_provider == "gemini":
+        models = _list_gemini_models(provider=dispatch_provider, base_url=effective_base_url or "", api_key=api_key, timeout=timeout)
     else:
-        raise AppError(code="LLM_CONFIG_ERROR", message="不支持的 provider", status_code=400)
+        models = []
 
     return ok_payload(
         request_id=request_id,
         data={
-            "provider": provider,
+            "provider": provider_value,
             "base_url": effective_base_url,
             "models": models,
             "warning": warning,

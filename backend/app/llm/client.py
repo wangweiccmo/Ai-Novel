@@ -13,6 +13,23 @@ from app.llm.messages import ChatMessage
 from app.llm.types import LLMCallResult, LLMStreamState
 from app.llm.utils import normalize_base_url
 
+KNOWN_PROVIDERS = frozenset(
+    {
+        "openai",
+        "openai_responses",
+        "openai_compatible",
+        "openai_responses_compatible",
+        "anthropic",
+        "gemini",
+        "deepseek",
+    }
+)
+
+
+def _dispatch_provider(provider: str) -> str:
+    norm = str(provider or "").strip()
+    return norm if norm in KNOWN_PROVIDERS else "openai_compatible"
+
 
 def _filter_params(provider: str, params: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     supported: set[str]
@@ -126,7 +143,8 @@ def call_llm_stream_messages(
         raise AppError(code="LLM_KEY_MISSING", message="缺少 API Key（请在 Prompts 页填写）", status_code=401)
 
     base_url = normalize_base_url(base_url)
-    filtered_params, dropped = _filter_params(provider, params)
+    dispatch_provider = _dispatch_provider(provider)
+    filtered_params, dropped = _filter_params(dispatch_provider, params)
     extra = extra or {}
 
     start = time.perf_counter()
@@ -138,12 +156,12 @@ def call_llm_stream_messages(
     timeout = httpx.Timeout(connect=connect_timeout, read=read_timeout, write=write_timeout, pool=pool_timeout)
 
     try:
-        if provider in ("openai", "openai_compatible"):
+        if dispatch_provider in ("openai", "openai_compatible"):
             from app.llm.providers.openai_chat import call_openai_chat_completions_stream
 
             return call_openai_chat_completions_stream(
                 client=client,
-                provider=provider,
+                provider=dispatch_provider,
                 base_url=base_url,
                 model=model,
                 api_key=api_key,
@@ -155,12 +173,12 @@ def call_llm_stream_messages(
                 extra=extra,
             )
 
-        if provider in ("openai_responses", "openai_responses_compatible"):
+        if dispatch_provider in ("openai_responses", "openai_responses_compatible"):
             from app.llm.providers.openai_responses import call_openai_responses_stream
 
             return call_openai_responses_stream(
                 client=client,
-                provider=provider,
+                provider=dispatch_provider,
                 base_url=base_url,
                 model=model,
                 api_key=api_key,
@@ -172,7 +190,7 @@ def call_llm_stream_messages(
                 extra=extra,
             )
 
-        if provider == "anthropic":
+        if dispatch_provider == "anthropic":
             from app.llm.providers.anthropic_messages import call_anthropic_messages_stream
 
             return call_anthropic_messages_stream(
@@ -188,7 +206,7 @@ def call_llm_stream_messages(
                 extra=extra,
             )
 
-        if provider == "gemini":
+        if dispatch_provider == "gemini":
             from app.llm.providers.gemini_generate_content import call_gemini_generate_content_stream
 
             return call_gemini_generate_content_stream(
@@ -204,12 +222,12 @@ def call_llm_stream_messages(
                 extra=extra,
             )
 
-        if provider == "deepseek":
+        if dispatch_provider == "deepseek":
             from app.llm.providers.openai_chat import call_openai_chat_completions_stream
 
             return call_openai_chat_completions_stream(
                 client=client,
-                provider=provider,
+                provider=dispatch_provider,
                 base_url=base_url,
                 model=model,
                 api_key=api_key,
@@ -276,7 +294,8 @@ def call_llm_messages(
         raise AppError(code="LLM_KEY_MISSING", message="缺少 API Key（请在 Prompts 页填写）", status_code=401)
 
     base_url = normalize_base_url(base_url)
-    filtered_params, dropped = _filter_params(provider, params)
+    dispatch_provider = _dispatch_provider(provider)
+    filtered_params, dropped = _filter_params(dispatch_provider, params)
     extra = extra or {}
 
     start = time.perf_counter()
@@ -288,12 +307,12 @@ def call_llm_messages(
         pool_timeout = min(10.0, read_timeout)
         timeout = httpx.Timeout(connect=connect_timeout, read=read_timeout, write=write_timeout, pool=pool_timeout)
 
-        if provider in ("openai", "openai_compatible"):
+        if dispatch_provider in ("openai", "openai_compatible"):
             from app.llm.providers.openai_chat import call_openai_chat_completions
 
             return call_openai_chat_completions(
                 client=client,
-                provider=provider,
+                provider=dispatch_provider,
                 base_url=base_url,
                 model=model,
                 api_key=api_key,
@@ -305,12 +324,12 @@ def call_llm_messages(
                 extra=extra,
             )
 
-        if provider in ("openai_responses", "openai_responses_compatible"):
+        if dispatch_provider in ("openai_responses", "openai_responses_compatible"):
             from app.llm.providers.openai_responses import call_openai_responses
 
             return call_openai_responses(
                 client=client,
-                provider=provider,
+                provider=dispatch_provider,
                 base_url=base_url,
                 model=model,
                 api_key=api_key,
@@ -322,7 +341,7 @@ def call_llm_messages(
                 extra=extra,
             )
 
-        if provider == "anthropic":
+        if dispatch_provider == "anthropic":
             from app.llm.providers.anthropic_messages import call_anthropic_messages
 
             return call_anthropic_messages(
@@ -338,7 +357,7 @@ def call_llm_messages(
                 extra=extra,
             )
 
-        if provider == "gemini":
+        if dispatch_provider == "gemini":
             from app.llm.providers.gemini_generate_content import call_gemini_generate_content
 
             return call_gemini_generate_content(
@@ -354,12 +373,12 @@ def call_llm_messages(
                 extra=extra,
             )
 
-        if provider == "deepseek":
+        if dispatch_provider == "deepseek":
             from app.llm.providers.openai_chat import call_openai_chat_completions
 
             return call_openai_chat_completions(
                 client=client,
-                provider=provider,
+                provider=dispatch_provider,
                 base_url=base_url,
                 model=model,
                 api_key=api_key,
@@ -417,4 +436,3 @@ def call_llm_messages(
                 timeout_seconds=timeout_seconds,
             ),
         ) from exc
-

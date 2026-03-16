@@ -1,13 +1,7 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated
 
-LLMProvider = Literal[
-    "openai",
-    "openai_responses",
-    "openai_compatible",
-    "openai_responses_compatible",
-    "anthropic",
-    "gemini",
-    "deepseek",
-]
+from pydantic import Field
+
+LLMProvider = Annotated[str, Field(min_length=1, max_length=64)]

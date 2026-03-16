@@ -7,13 +7,31 @@ from app.core.errors import AppError
 from app.llm.registry import (
     ContractMode,
     LLMContractLookupError,
+    LLMContractResolution,
+    LLMProviderContract,
     max_context_tokens_limit,
     max_output_tokens_limit,
+    model_key,
     pricing_contract,
     recommended_max_tokens,
     resolve_base_url,
     resolve_llm_contract,
 )
+
+UNKNOWN_PROVIDER_NOTE = "unknown_provider"
+UNKNOWN_PROVIDER_DEFAULT_MAX_TOKENS = 12000
+
+
+def _fallback_provider_contract(provider: str) -> LLMProviderContract:
+    return LLMProviderContract(
+        key=provider,
+        default_base_url=None,
+        requires_base_url=False,
+        allows_unknown_models=True,
+        recommended_max_tokens=UNKNOWN_PROVIDER_DEFAULT_MAX_TOKENS,
+        supported_params=frozenset({"temperature", "top_p", "max_tokens", "stop"}),
+        aliases=frozenset(),
+    )
 
 
 def current_contract_mode() -> ContractMode:
@@ -56,6 +74,22 @@ def resolve_provider_model(provider: str, model: str, *, mode: ContractMode | No
     try:
         return resolve_llm_contract(provider, model, mode=active_mode)
     except LLMContractLookupError as exc:
+        if exc.code == "unsupported_provider":
+            provider_norm = str(provider or "").strip()
+            model_norm = str(model or "").strip()
+            if not provider_norm:
+                _raise_contract_error(LLMContractLookupError("provider_required"))
+            if not model_norm:
+                _raise_contract_error(LLMContractLookupError("model_required", provider=provider_norm))
+            return LLMContractResolution(
+                provider=provider_norm,
+                model=model_norm,
+                model_key=model_key(provider_norm, model_norm),
+                provider_contract=_fallback_provider_contract(provider_norm),
+                model_contract=None,
+                compatibility_alias=None,
+                notes=(UNKNOWN_PROVIDER_NOTE,),
+            )
         _raise_contract_error(exc)
 
 
@@ -69,6 +103,9 @@ def normalize_base_url_for_provider(provider: str, base_url: str | None, *, mode
     try:
         return resolve_base_url(provider, base_url, mode=active_mode).base_url
     except LLMContractLookupError as exc:
+        if exc.code == "unsupported_provider":
+            raw = str(base_url or "").strip()
+            return raw or None
         _raise_contract_error(exc)
 
 
@@ -80,6 +117,13 @@ def normalize_max_tokens_for_provider(
     mode: ContractMode | None = None,
 ) -> int:
     resolution = resolve_provider_model(provider, model, mode=mode)
+    if UNKNOWN_PROVIDER_NOTE in resolution.notes:
+        if raw_value is None:
+            return UNKNOWN_PROVIDER_DEFAULT_MAX_TOKENS
+        max_tokens = int(raw_value)
+        if max_tokens <= 0:
+            raise AppError.validation(message="最大 tokens（max_tokens）必须为正整数")
+        return max_tokens
     if raw_value is None:
         return recommended_max_tokens(resolution.provider, resolution.model, mode=mode or current_contract_mode())
     max_tokens = int(raw_value)
@@ -119,6 +163,15 @@ def capability_contract(provider: str, model: str, *, mode: ContractMode | None 
     resolution = resolve_provider_model(provider, model, mode=mode)
     active_mode = mode or current_contract_mode()
     metadata = contract_metadata(resolution.provider, resolution.model, mode=active_mode)
+    if UNKNOWN_PROVIDER_NOTE in resolution.notes:
+        metadata.update(
+            {
+                "max_tokens_limit": None,
+                "max_tokens_recommended": None,
+                "context_window_limit": None,
+            }
+        )
+        return metadata
     metadata.update(
         {
             "max_tokens_limit": max_output_tokens_limit(resolution.provider, resolution.model, mode=active_mode),
