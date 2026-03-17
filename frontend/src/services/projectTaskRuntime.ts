@@ -85,6 +85,14 @@ export async function getBatchGenerationTask(taskId: string): Promise<ActiveBatc
   return res.data;
 }
 
+export async function markBatchGenerationItemApplied(generationRunId: string): Promise<BatchGenerationTaskItem> {
+  const res = await apiJson<{ item: BatchGenerationTaskItem }>(`/api/batch_generation_task_items/mark_applied`, {
+    method: "POST",
+    body: JSON.stringify({ generation_run_id: generationRunId }),
+  });
+  return res.data.item;
+}
+
 async function postBatchGenerationControl(taskId: string, action: string): Promise<void> {
   await apiJson(`/api/batch_generation_tasks/${encodeURIComponent(taskId)}/${action}`, {
     method: "POST",

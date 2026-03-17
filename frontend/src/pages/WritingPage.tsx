@@ -618,7 +618,7 @@ export function WritingPage() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.isComposing) return;
 
-      const key = e.key.toLowerCase();
+      const key = typeof e.key === "string" ? e.key.toLowerCase() : "";
       const mod = e.metaKey || e.ctrlKey;
 
       if (mod && !e.shiftKey && !e.altKey && key === "enter") {
@@ -631,10 +631,10 @@ export function WritingPage() {
         return;
       }
 
-      if (!mod && e.altKey && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      if (!mod && e.altKey && !e.shiftKey && (key === "arrowup" || key === "arrowdown")) {
         if (isEditableTarget(e.target)) return;
         e.preventDefault();
-        selectAdjacentChapter(e.key === "ArrowUp" ? -1 : 1);
+        selectAdjacentChapter(key === "arrowup" ? -1 : 1);
       }
     };
 
@@ -1132,6 +1132,8 @@ export function WritingPage() {
         setBatchCount={batch.setBatchCount}
         batchIncludeExisting={batch.batchIncludeExisting}
         setBatchIncludeExisting={batch.setBatchIncludeExisting}
+        batchStartFromCurrent={batch.batchStartFromCurrent}
+        setBatchStartFromCurrent={batch.setBatchStartFromCurrent}
         batchTask={batch.batchTask}
         batchItems={batch.batchItems}
         batchRuntime={batch.batchRuntime}

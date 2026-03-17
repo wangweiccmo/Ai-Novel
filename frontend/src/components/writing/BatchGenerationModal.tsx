@@ -163,6 +163,8 @@ export function BatchGenerationModal(props: {
   setBatchCount: (value: number) => void;
   batchIncludeExisting: boolean;
   setBatchIncludeExisting: (value: boolean) => void;
+  batchStartFromCurrent: boolean;
+  setBatchStartFromCurrent: (value: boolean) => void;
   batchTask: BatchGenerationTask | null;
   batchItems: BatchGenerationTaskItem[];
   batchRuntime: ProjectTaskRuntime | null;
@@ -207,7 +209,7 @@ export function BatchGenerationModal(props: {
   const canResume = Boolean(taskPaused && failedItems.length === 0);
   const canRetryFailed = Boolean(taskPaused && failedItems.length > 0);
   const canSkipFailed = Boolean(taskPaused && failedItems.length > 0);
-  const canApplyAll = Boolean(taskTerminal && succeededItems.length > 0);
+  const canApplyAll = Boolean(succeededItems.length > 0);
   const canCancel = Boolean(
     task && (task.status === "queued" || task.status === "running" || task.status === "paused"),
   );
@@ -256,8 +258,21 @@ export function BatchGenerationModal(props: {
         <div className="grid gap-2 rounded-atelier border border-border bg-canvas p-3">
           <div className="text-sm font-medium text-ink">步骤 1 · 范围</div>
           <div className="text-xs text-subtext">
-            起始位置：{props.activeChapterNumber ? `第 ${props.activeChapterNumber} 章之后` : "第 1 章之后"}
+            起始位置：
+            {props.activeChapterNumber
+              ? `第 ${props.activeChapterNumber} 章${props.batchStartFromCurrent ? "开始" : "之后"}`
+              : "第 1 章开始"}
           </div>
+          <label className="flex items-center gap-2 pb-1 text-sm text-ink">
+            <input
+              className="checkbox"
+              type="checkbox"
+              checked={props.batchStartFromCurrent}
+              disabled={props.batchLoading || taskRunning || !props.activeChapterNumber}
+              onChange={(e) => props.setBatchStartFromCurrent(e.target.checked)}
+            />
+            从当前章节开始
+          </label>
           <div className="text-[11px] text-subtext">
             以当前章节为起点，按顺序生成后续章节。
           </div>
@@ -369,7 +384,7 @@ export function BatchGenerationModal(props: {
                   aria-label="Apply all batch generations (batch_generation_apply_all)"
                   type="button"
                 >
-                  {props.batchApplying ? "处理中..." : "开始批量处理"}
+                  {props.batchApplying ? "处理中..." : "批量应用到编辑器"}
                 </button>
               ) : null}
             </div>

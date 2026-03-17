@@ -13,7 +13,12 @@ from app.db.utils import new_id, utc_now
 from app.models.batch_generation_task import BatchGenerationTask, BatchGenerationTaskItem
 from app.models.chapter import Chapter
 from app.models.project_task import ProjectTask
-from app.schemas.batch_generation import BatchGenerationCreateRequest, BatchGenerationTaskItemOut, BatchGenerationTaskOut
+from app.schemas.batch_generation import (
+    BatchGenerationCreateRequest,
+    BatchGenerationMarkAppliedRequest,
+    BatchGenerationTaskItemOut,
+    BatchGenerationTaskOut,
+)
 from app.services.batch_generation_service import (
     append_batch_project_task_event,
     build_batch_step_payload,
@@ -164,7 +169,13 @@ def create_batch_generation_task(
     if existing is not None:
         raise AppError.conflict(message="已有进行中的批量生成任务，请先取消或等待完成", details={"task_id": existing.id})
 
-    if body.after_chapter_id:
+    if body.start_chapter_id:
+        start = require_chapter_editor(db, chapter_id=body.start_chapter_id, user_id=user_id)
+        if start.project_id != project_id:
+            raise AppError.validation(message="起始章节（start_chapter_id）不属于当前项目")
+        outline_id = start.outline_id
+        start_number = int(start.number)
+    elif body.after_chapter_id:
         after = require_chapter_editor(db, chapter_id=body.after_chapter_id, user_id=user_id)
         if after.project_id != project_id:
             raise AppError.validation(message="起始章节（after_chapter_id）不属于当前项目")
@@ -421,6 +432,46 @@ def get_batch_generation_task(
     out_task = BatchGenerationTaskOut.model_validate(task).model_dump()
     out_items = [BatchGenerationTaskItemOut.model_validate(i).model_dump() for i in items]
     return ok_payload(request_id=request_id, data={"task": out_task, "items": out_items})
+
+
+@router.post("/batch_generation_task_items/mark_applied")
+def mark_batch_generation_task_item_applied(
+    request: Request,
+    db: DbDep,
+    user_id: UserIdDep,
+    body: BatchGenerationMarkAppliedRequest,
+) -> dict:
+    request_id = request.state.request_id
+    run_id = str(body.generation_run_id or "").strip()
+    if not run_id:
+        raise AppError.validation(message="generation_run_id 不能为空")
+
+    item = (
+        db.execute(select(BatchGenerationTaskItem).where(BatchGenerationTaskItem.generation_run_id == run_id))
+        .scalars()
+        .first()
+    )
+    if item is None:
+        raise AppError.not_found(message="批量生成条目不存在")
+
+    task = db.get(BatchGenerationTask, str(item.task_id))
+    if task is None:
+        raise AppError.not_found(message="批量生成任务不存在")
+
+    require_project_editor(db, project_id=str(task.project_id), user_id=user_id)
+
+    if str(item.status) != "succeeded":
+        raise AppError.conflict(message="批量生成条目尚未成功，无法标记为已应用", details={"status": item.status})
+
+    if item.applied_at is None:
+        item.applied_at = utc_now()
+        item.applied_by_user_id = user_id
+        db.commit()
+    else:
+        db.commit()
+
+    out_item = BatchGenerationTaskItemOut.model_validate(item).model_dump()
+    return ok_payload(request_id=request_id, data={"item": out_item})
 
 
 @router.post("/batch_generation_tasks/{task_id}/pause")

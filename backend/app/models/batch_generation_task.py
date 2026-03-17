@@ -41,6 +41,8 @@ class BatchGenerationTaskItem(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     generation_run_id: Mapped[str | None] = mapped_column(ForeignKey("generation_runs.id", ondelete="SET NULL"), nullable=True)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    applied_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     last_request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_error_json: Mapped[str | None] = mapped_column(Text, nullable=True)

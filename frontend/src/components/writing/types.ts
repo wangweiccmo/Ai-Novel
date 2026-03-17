@@ -112,6 +112,8 @@ export type BatchGenerationTaskItem = {
   status: BatchGenerationItemStatus;
   attempt_count: number;
   generation_run_id?: string | null;
+  applied_at?: string | null;
+  applied_by_user_id?: string | null;
   last_request_id?: string | null;
   error_message?: string | null;
   last_error_json?: string | null;

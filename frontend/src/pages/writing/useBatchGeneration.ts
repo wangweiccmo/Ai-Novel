@@ -13,6 +13,7 @@ import {
   hasFailedBatchGenerationItems,
   isBatchGenerationProjectTaskKind,
   isBatchGenerationTaskStatusRecoverable,
+  markBatchGenerationItemApplied,
   pauseBatchGenerationTask,
   resumeBatchGenerationTask,
   retryFailedBatchGenerationTask,
@@ -54,6 +55,7 @@ export function useBatchGeneration(args: {
   const [batchLoading, setBatchLoading] = useState(false);
   const [batchCount, setBatchCount] = useState(3);
   const [batchIncludeExisting, setBatchIncludeExisting] = useState(false);
+  const [batchStartFromCurrent, setBatchStartFromCurrent] = useState(false);
   const [batchTask, setBatchTask] = useState<BatchGenerationTask | null>(null);
   const [batchItems, setBatchItems] = useState<BatchGenerationTaskItem[]>([]);
   const [batchRuntime, setBatchRuntime] = useState<ProjectTaskRuntime | null>(null);
@@ -73,12 +75,34 @@ export function useBatchGeneration(args: {
   }, [batchTask]);
 
   useEffect(() => {
+    if (!activeChapter) {
+      setBatchStartFromCurrent(false);
+    }
+  }, [activeChapter]);
+
+  useEffect(() => {
     const nextId = batchTask?.id ?? null;
     if (nextId !== lastBatchTaskIdRef.current) {
       lastBatchTaskIdRef.current = nextId;
       setAppliedRunIds([]);
     }
   }, [batchTask?.id]);
+
+  useEffect(() => {
+    const valid = new Set(
+      batchItems.map((item) => item.generation_run_id).filter((id): id is string => Boolean(id)),
+    );
+    const backendApplied = new Set(
+      batchItems
+        .filter((item) => Boolean(item.applied_at))
+        .map((item) => item.generation_run_id)
+        .filter((id): id is string => Boolean(id)),
+    );
+    setAppliedRunIds((prev) => {
+      const next = new Set<string>([...prev, ...backendApplied]);
+      return [...next].filter((id) => valid.has(id));
+    });
+  }, [batchItems]);
 
   useEffect(() => {
     const batchRefreshGuard = batchRefreshGuardRef.current;
@@ -113,14 +137,16 @@ export function useBatchGeneration(args: {
         }
       }
     },
-    [toast],
+    [markBatchGenerationItemApplied, toast],
   );
 
   const refreshBatchTask = useCallback(
     async (opts?: { silent?: boolean; taskId?: string | null }) => {
       if (!projectId) return;
       const seq = batchRefreshGuardRef.current.next();
-      const fallbackTaskId = String(opts?.taskId || batchTaskRef.current?.id || "").trim();
+      const fallbackTaskId = String(
+        opts?.taskId || batchTaskRef.current?.id || lastBatchTaskIdRef.current || "",
+      ).trim();
       try {
         let data = await getActiveBatchGenerationTask(projectId);
         if (!data.task && fallbackTaskId) {
@@ -133,6 +159,12 @@ export function useBatchGeneration(args: {
           }
         }
         if (!batchRefreshGuardRef.current.isLatest(seq)) return;
+
+        // If backend returns empty while we still have cached data, keep it to avoid list flicker.
+        if (!data.task && batchTaskRef.current) {
+          return;
+        }
+
         setBatchTask(data.task);
         setBatchItems(data.items);
         batchTaskRef.current = data.task;
@@ -236,8 +268,10 @@ export function useBatchGeneration(args: {
         typeof genForm.target_word_count === "number" && genForm.target_word_count >= 100
           ? genForm.target_word_count
           : null;
+      const startFromCurrent = Boolean(batchStartFromCurrent && activeChapter?.id);
       const payload = {
-        after_chapter_id: activeChapter?.id ?? null,
+        start_chapter_id: startFromCurrent ? activeChapter?.id ?? null : null,
+        after_chapter_id: startFromCurrent ? null : activeChapter?.id ?? null,
         count: batchCount,
         include_existing: batchIncludeExisting,
         instruction: genForm.instruction,
@@ -301,6 +335,7 @@ export function useBatchGeneration(args: {
     activeChapter?.id,
     batchCount,
     batchIncludeExisting,
+    batchStartFromCurrent,
     chapters,
     genForm,
     preset,
@@ -423,8 +458,19 @@ export function useBatchGeneration(args: {
   const applyAllToEditor = useCallback(async () => {
     if (batchApplying) return;
     if (applyRunId) {
-      toast.toastError("已有正在应用的生成结果，请稍后再试。");
-      return;
+      const matchedItem = batchItems.find((item) => item.generation_run_id === applyRunId);
+      const stale =
+        !applyRunId.trim() ||
+        !matchedItem ||
+        appliedRunIds.includes(applyRunId) ||
+        Boolean(matchedItem?.applied_at);
+      if (!stale) {
+        toast.toastError("已有正在应用的生成结果，请稍后再试。");
+        return;
+      }
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete("applyRunId");
+      setSearchParams(nextParams, { replace: true });
     }
     const queue = buildApplyQueue();
     if (queue.length === 0) {
@@ -433,14 +479,27 @@ export function useBatchGeneration(args: {
     }
     batchApplyQueueRef.current = queue;
     setBatchApplying(true);
-  }, [applyRunId, batchApplying, buildApplyQueue, toast]);
+  }, [applyRunId, appliedRunIds, batchApplying, batchItems, buildApplyQueue, searchParams, setSearchParams, toast]);
 
   const applyBatchItemToEditor = useCallback(
     async (item: BatchGenerationTaskItem) => {
       if (batchApplying) return;
       if (applyRunId) {
-        toast.toastError("宸叉湁姝ｅ湪搴旂敤鐨勭敓鎴愮粨鏋滐紝璇风◢鍚庡啀璇曘€?");
-        return;
+        const matchedItem = batchItems.find((it) => it.generation_run_id === applyRunId);
+        const sameItem = applyRunId === item.generation_run_id;
+        const stale =
+          sameItem ||
+          !applyRunId.trim() ||
+          !matchedItem ||
+          appliedRunIds.includes(applyRunId) ||
+          Boolean(matchedItem?.applied_at);
+        if (!stale) {
+          toast.toastError("已有正在应用的生成结果，请稍后再试。");
+          return;
+        }
+        const nextParams = new URLSearchParams(searchParams);
+        nextParams.delete("applyRunId");
+        setSearchParams(nextParams, { replace: true });
       }
       if (!item.chapter_id || !item.generation_run_id) return;
       const ok = await requestSelectChapter(item.chapter_id);
@@ -449,22 +508,35 @@ export function useBatchGeneration(args: {
       next.set("applyRunId", item.generation_run_id);
       setSearchParams(next, { replace: true });
     },
-    [applyRunId, batchApplying, requestSelectChapter, searchParams, setSearchParams, toast],
+    [applyRunId, appliedRunIds, batchApplying, batchItems, requestSelectChapter, searchParams, setSearchParams, toast],
   );
 
-  const markRunApplied = useCallback((runId: string) => {
-    const trimmed = String(runId || "").trim();
-    if (!trimmed) return;
-    setAppliedRunIds((prev) => (prev.includes(trimmed) ? prev : [...prev, trimmed]));
-  }, []);
 
-  useEffect(() => {
-    if (appliedRunIds.length === 0) return;
-    const valid = new Set(
-      batchItems.map((item) => item.generation_run_id).filter((id): id is string => Boolean(id)),
-    );
-    setAppliedRunIds((prev) => prev.filter((id) => valid.has(id)));
-  }, [batchItems, appliedRunIds.length]);
+  const markRunApplied = useCallback(
+    (runId: string) => {
+      const trimmed = String(runId || "").trim();
+      if (!trimmed) return;
+      setAppliedRunIds((prev) => (prev.includes(trimmed) ? prev : [...prev, trimmed]));
+      setBatchItems((prev) =>
+        prev.map((item) =>
+          item.generation_run_id === trimmed && !item.applied_at
+            ? { ...item, applied_at: new Date().toISOString() }
+            : item,
+        ),
+      );
+      void (async () => {
+        try {
+          const updated = await markBatchGenerationItemApplied(trimmed);
+          setBatchItems((prev) => prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)));
+        } catch (e) {
+          const err = e as ApiError;
+          toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        }
+      })();
+    },
+    [toast],
+  );
+
 
   return {
     open,
@@ -475,6 +547,8 @@ export function useBatchGeneration(args: {
     setBatchCount,
     batchIncludeExisting,
     setBatchIncludeExisting,
+    batchStartFromCurrent,
+    setBatchStartFromCurrent,
     batchTask,
     batchItems,
     batchRuntime,

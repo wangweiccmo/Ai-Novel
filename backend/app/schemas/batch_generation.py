@@ -14,6 +14,7 @@ BatchGenerationItemStatus = Literal["queued", "running", "succeeded", "failed", 
 
 
 class BatchGenerationCreateRequest(BaseModel):
+    start_chapter_id: str | None = Field(default=None, max_length=36)
     after_chapter_id: str | None = Field(default=None, max_length=36)
     count: int = Field(ge=1, le=200)
     include_existing: bool = False
@@ -27,6 +28,10 @@ class BatchGenerationCreateRequest(BaseModel):
     context: ChapterGenerateContext = Field(default_factory=ChapterGenerateContext)
 
 
+class BatchGenerationMarkAppliedRequest(BaseModel):
+    generation_run_id: str = Field(max_length=36)
+
+
 class BatchGenerationTaskItemOut(ORMModel):
     id: str
     task_id: str
@@ -35,6 +40,8 @@ class BatchGenerationTaskItemOut(ORMModel):
     status: BatchGenerationItemStatus
     attempt_count: int
     generation_run_id: str | None = None
+    applied_at: datetime | None = None
+    applied_by_user_id: str | None = None
     last_request_id: str | None = None
     error_message: str | None = None
     last_error_json: str | None = None
