@@ -8,6 +8,7 @@ import threading
 import time
 from dataclasses import dataclass
 from collections.abc import Callable
+import anyio
 
 from fastapi import APIRouter, Header, Request
 from sqlalchemy import select
@@ -75,9 +76,39 @@ OUTLINE_SEGMENT_INDEX_MAX_ITEMS = 140
 OUTLINE_SEGMENT_INDEX_MAX_CHARS = 6000
 OUTLINE_SEGMENT_RECENT_WINDOW_MAX_CHARS = 2800
 OUTLINE_STREAM_RAW_PREVIEW_MAX_CHARS = 1800
+CANCEL_ERROR_CODE = "REQUEST_ABORTED"
 
 OutlineFillProgressHook = Callable[[dict[str, object]], None]
 OutlineSegmentProgressHook = Callable[[dict[str, object]], None]
+
+
+def _raise_request_canceled() -> None:
+    raise AppError(code=CANCEL_ERROR_CODE, message="请求已取消", status_code=499)
+
+
+def _raise_if_canceled(cancel_event: threading.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        _raise_request_canceled()
+
+
+def _is_request_disconnected(request: Request) -> bool:
+    try:
+        return bool(anyio.from_thread.run(request.is_disconnected))
+    except Exception:
+        return False
+
+
+def _start_disconnect_watcher(request: Request, cancel_event: threading.Event) -> threading.Thread:
+    def _watch() -> None:
+        while not cancel_event.is_set():
+            if _is_request_disconnected(request):
+                cancel_event.set()
+                break
+            time.sleep(0.2)
+
+    watcher = threading.Thread(target=_watch, name="outline-cancel-watch", daemon=True)
+    watcher.start()
+    return watcher
 
 
 def _outline_out(row: Outline) -> dict[str, object]:
@@ -758,8 +789,10 @@ def _generate_outline_segmented_with_llm(
     prompt_user: str,
     target_chapter_count: int,
     run_params_extra_json: dict[str, object] | None,
+    cancel_event: threading.Event | None = None,
     progress_hook: OutlineSegmentProgressHook | None = None,
 ) -> _OutlineSegmentGenerationResult:
+    _raise_if_canceled(cancel_event)
     warnings: list[str] = ["outline_segment_mode_enabled"]
     run_ids: list[str] = []
     dropped_params: list[str] = []
@@ -792,6 +825,7 @@ def _generate_outline_segmented_with_llm(
     )
 
     for batch_index, batch in enumerate(batches, start=1):
+        _raise_if_canceled(cancel_event)
         missing_numbers = [n for n in batch if n not in chapters_by_number]
         if not missing_numbers:
             continue
@@ -802,6 +836,7 @@ def _generate_outline_segmented_with_llm(
         last_output_numbers: list[int] | None = None
 
         while missing_numbers and attempt < max_attempts:
+            _raise_if_canceled(cancel_event)
             attempt += 1
             range_text = _format_chapter_number_ranges(batch)
             _emit_progress(
@@ -866,6 +901,8 @@ def _generate_outline_segmented_with_llm(
                     run_params_extra_json=segment_extra,
                 )
             except AppError as exc:
+                if exc.code == CANCEL_ERROR_CODE:
+                    raise
                 warnings.append("outline_segment_call_failed")
                 if exc.code == "LLM_TIMEOUT":
                     warnings.append("outline_segment_timeout")
@@ -1060,6 +1097,7 @@ def _generate_outline_segmented_with_llm(
         api_key=api_key,
         llm_call=llm_call,
         run_params_extra_json=run_params_extra_json,
+        cancel_event=cancel_event,
         progress_hook=_forward_fill_progress if progress_hook is not None else None,
     )
     warnings.extend(fill_warnings)
@@ -1619,8 +1657,10 @@ def _repair_outline_remaining_gaps_with_llm(
     api_key: str,
     llm_call,
     run_params_extra_json: dict[str, object] | None,
+    cancel_event: threading.Event | None = None,
     progress_hook: OutlineFillProgressHook | None = None,
 ) -> tuple[dict[str, object], list[str], list[str]]:
+    _raise_if_canceled(cancel_event)
     if not target_chapter_count or target_chapter_count <= 0:
         return data, [], []
     chapters_now, normalize_warnings = _normalize_outline_chapters(data.get("chapters"))
@@ -1655,6 +1695,7 @@ def _repair_outline_remaining_gaps_with_llm(
         )
 
     while attempt < max_attempts:
+        _raise_if_canceled(cancel_event)
         missing_numbers = _collect_missing_chapter_numbers(chapters_now, target_chapter_count=target_chapter_count)
         if not missing_numbers:
             break
@@ -1714,6 +1755,8 @@ def _repair_outline_remaining_gaps_with_llm(
                 run_params_extra_json=repair_extra,
             )
         except AppError as exc:
+            if exc.code == CANCEL_ERROR_CODE:
+                raise
             warnings.append("outline_gap_repair_call_failed")
             if exc.code == "LLM_TIMEOUT":
                 warnings.append("outline_gap_repair_timeout")
@@ -1855,6 +1898,7 @@ def _repair_outline_remaining_gaps_with_llm(
             api_key=api_key,
             llm_call=llm_call,
             run_params_extra_json=run_params_extra_json,
+            cancel_event=cancel_event,
             progress_hook=progress_hook,
         )
         warnings.extend(final_warnings)
@@ -1898,8 +1942,10 @@ def _repair_outline_remaining_gaps_final_sweep_with_llm(
     api_key: str,
     llm_call,
     run_params_extra_json: dict[str, object] | None,
+    cancel_event: threading.Event | None = None,
     progress_hook: OutlineFillProgressHook | None = None,
 ) -> tuple[list[dict[str, object]], list[str], list[str]]:
+    _raise_if_canceled(cancel_event)
     warnings: list[str] = []
     run_ids: list[str] = []
     missing_numbers = _collect_missing_chapter_numbers(chapters_now, target_chapter_count=target_chapter_count)
@@ -1923,10 +1969,12 @@ def _repair_outline_remaining_gaps_final_sweep_with_llm(
         )
 
     for number in list(missing_numbers):
+        _raise_if_canceled(cancel_event)
         chapter_fixed = False
         last_failure_reason: str | None = None
         last_output_numbers: list[int] | None = None
         for attempt in range(1, max_attempts + 1):
+            _raise_if_canceled(cancel_event)
             remaining_before = len(_collect_missing_chapter_numbers(chapters_now, target_chapter_count=target_chapter_count))
             if progress_hook is not None:
                 progress_hook(
@@ -1980,6 +2028,8 @@ def _repair_outline_remaining_gaps_final_sweep_with_llm(
                     run_params_extra_json=repair_extra,
                 )
             except AppError as exc:
+                if exc.code == CANCEL_ERROR_CODE:
+                    raise
                 warnings.append("outline_gap_repair_final_sweep_call_failed")
                 if exc.code == "LLM_TIMEOUT":
                     warnings.append("outline_gap_repair_final_sweep_timeout")
@@ -2088,8 +2138,10 @@ def _fill_outline_missing_chapters_with_llm(
     api_key: str,
     llm_call,
     run_params_extra_json: dict[str, object] | None,
+    cancel_event: threading.Event | None = None,
     progress_hook: OutlineFillProgressHook | None = None,
 ) -> tuple[dict[str, object], list[str], list[str]]:
+    _raise_if_canceled(cancel_event)
     if not target_chapter_count or target_chapter_count <= 0:
         return data, [], []
     chapters_now, normalize_warnings = _normalize_outline_chapters(data.get("chapters"))
@@ -2115,6 +2167,7 @@ def _fill_outline_missing_chapters_with_llm(
         )
 
     while attempt < max_attempts:
+        _raise_if_canceled(cancel_event)
         missing_numbers = _collect_missing_chapter_numbers(chapters_now, target_chapter_count=target_chapter_count)
         if not missing_numbers:
             break
@@ -2168,6 +2221,8 @@ def _fill_outline_missing_chapters_with_llm(
                 run_params_extra_json=fill_extra,
             )
         except AppError as exc:
+            if exc.code == CANCEL_ERROR_CODE:
+                raise
             warnings.append("outline_fill_missing_call_failed")
             if exc.code == "LLM_TIMEOUT":
                 warnings.append("outline_fill_missing_timeout")
@@ -2300,6 +2355,7 @@ def _fill_outline_missing_chapters_with_llm(
             api_key=api_key,
             llm_call=llm_call,
             run_params_extra_json=run_params_extra_json,
+            cancel_event=cancel_event,
             progress_hook=progress_hook,
         )
         data = repaired_data
@@ -2402,153 +2458,170 @@ def generate_outline(
     if prepared is None:
         raise AppError(code="INTERNAL_ERROR", message="LLM 调用准备失败", status_code=500)
 
-    if _should_use_outline_segmented_mode(prepared.target_chapter_count):
-        assert prepared.target_chapter_count is not None
-        segmented = _generate_outline_segmented_with_llm(
-            request_id=request_id,
-            actor_user_id=user_id,
-            project_id=project_id,
-            api_key=str(prepared.resolved_api_key),
-            llm_call=prepared.llm_call,
-            prompt_system=prepared.prompt_system,
-            prompt_user=prepared.prompt_user,
-            target_chapter_count=prepared.target_chapter_count,
-            run_params_extra_json=prepared.run_params_extra_json,
-        )
-        aggregate_params_json = build_run_params_json(
-            params_json=prepared.llm_call.params_json,
-            memory_retrieval_log_json=None,
-            extra_json=prepared.run_params_extra_json,
-        )
-        aggregate_run_id = _write_outline_segmented_aggregate_run(
-            request_id=request_id,
-            actor_user_id=user_id,
-            project_id=project_id,
-            run_type="outline_segmented",
-            llm_call=prepared.llm_call,
-            prompt_system=prepared.prompt_system,
-            prompt_user=prepared.prompt_user,
-            prompt_render_log_json=prepared.prompt_render_log_json,
-            run_params_json=aggregate_params_json,
-            data=segmented.data,
-            warnings=segmented.warnings,
-            parse_error=segmented.parse_error,
-            segmented_run_ids=segmented.run_ids,
-            meta=segmented.meta,
-        )
-        data = dict(segmented.data)
-        warnings = _dedupe_warnings(segmented.warnings)
-        if warnings:
-            data["warnings"] = warnings
-        if segmented.parse_error is not None:
-            data["parse_error"] = segmented.parse_error
-        data["generation_run_id"] = aggregate_run_id
-        if segmented.run_ids:
-            data["generation_sub_run_ids"] = segmented.run_ids
-            data["generation_run_ids"] = [aggregate_run_id, *segmented.run_ids]
-        if segmented.latency_ms > 0:
-            data["latency_ms"] = segmented.latency_ms
-        if segmented.dropped_params:
-            data["dropped_params"] = segmented.dropped_params
-        if segmented.finish_reasons:
-            data["finish_reason"] = segmented.finish_reasons[-1]
-            data["finish_reasons"] = segmented.finish_reasons
-        data["segmented_generation"] = segmented.meta
-        return ok_payload(request_id=request_id, data=data)
-
-    llm_result = call_llm_and_record(
-        logger=logger,
-        request_id=request_id,
-        actor_user_id=user_id,
-        project_id=project_id,
-        chapter_id=None,
-        run_type="outline",
-        api_key=str(prepared.resolved_api_key),
-        prompt_system=prepared.prompt_system,
-        prompt_user=prepared.prompt_user,
-        prompt_messages=prepared.prompt_messages,
-        prompt_render_log_json=prepared.prompt_render_log_json,
-        llm_call=prepared.llm_call,
-        run_params_extra_json=prepared.run_params_extra_json,
-    )
-
-    raw_output = llm_result.text
-    finish_reason = llm_result.finish_reason
-    contract = contract_for_task("outline_generate")
-    parsed = contract.parse(raw_output, finish_reason=finish_reason)
-    data, warnings, parse_error = parsed.data, parsed.warnings, parsed.parse_error
-
-    if parse_error is not None and prepared.llm_call.provider in (
-        "openai",
-        "openai_responses",
-        "openai_compatible",
-        "openai_responses_compatible",
-    ):
-        try:
-            repair = build_repair_prompt_for_task("outline_generate", raw_output=raw_output)
-            if repair is None:
-                raise AppError(code="OUTLINE_FIX_UNSUPPORTED", message="该任务不支持输出修复", status_code=400)
-            fix_system, fix_user, fix_run_type = repair
-            fix_call = with_param_overrides(prepared.llm_call, {"temperature": 0, "max_tokens": 1024})
-            fixed = call_llm_and_record(
-                logger=logger,
+    cancel_event = threading.Event()
+    _start_disconnect_watcher(request, cancel_event)
+    try:
+        _raise_if_canceled(cancel_event)
+        if _should_use_outline_segmented_mode(prepared.target_chapter_count):
+            assert prepared.target_chapter_count is not None
+            segmented = _generate_outline_segmented_with_llm(
                 request_id=request_id,
                 actor_user_id=user_id,
                 project_id=project_id,
-                chapter_id=None,
-                run_type=fix_run_type,
                 api_key=str(prepared.resolved_api_key),
-                prompt_system=fix_system,
-                prompt_user=fix_user,
-                llm_call=fix_call,
+                llm_call=prepared.llm_call,
+                prompt_system=prepared.prompt_system,
+                prompt_user=prepared.prompt_user,
+                target_chapter_count=prepared.target_chapter_count,
                 run_params_extra_json=prepared.run_params_extra_json,
+                cancel_event=cancel_event,
             )
-            fixed_parsed = contract.parse(fixed.text)
-            fixed_data, fixed_warnings, fixed_error = fixed_parsed.data, fixed_parsed.warnings, fixed_parsed.parse_error
-            if fixed_error is None and fixed_data.get("chapters"):
-                fixed_data["raw_output"] = raw_output
-                fixed_data["fixed_json"] = fixed_data.get("raw_json") or fixed.text
-                data = fixed_data
-                warnings.extend(["json_fixed_via_llm", *fixed_warnings])
-                parse_error = None
-        except AppError:
-            warnings.append("outline_fix_json_failed")
+            aggregate_params_json = build_run_params_json(
+                params_json=prepared.llm_call.params_json,
+                memory_retrieval_log_json=None,
+                extra_json=prepared.run_params_extra_json,
+            )
+            aggregate_run_id = _write_outline_segmented_aggregate_run(
+                request_id=request_id,
+                actor_user_id=user_id,
+                project_id=project_id,
+                run_type="outline_segmented",
+                llm_call=prepared.llm_call,
+                prompt_system=prepared.prompt_system,
+                prompt_user=prepared.prompt_user,
+                prompt_render_log_json=prepared.prompt_render_log_json,
+                run_params_json=aggregate_params_json,
+                data=segmented.data,
+                warnings=segmented.warnings,
+                parse_error=segmented.parse_error,
+                segmented_run_ids=segmented.run_ids,
+                meta=segmented.meta,
+            )
+            data = dict(segmented.data)
+            warnings = _dedupe_warnings(segmented.warnings)
+            if warnings:
+                data["warnings"] = warnings
+            if segmented.parse_error is not None:
+                data["parse_error"] = segmented.parse_error
+            data["generation_run_id"] = aggregate_run_id
+            if segmented.run_ids:
+                data["generation_sub_run_ids"] = segmented.run_ids
+                data["generation_run_ids"] = [aggregate_run_id, *segmented.run_ids]
+            if segmented.latency_ms > 0:
+                data["latency_ms"] = segmented.latency_ms
+            if segmented.dropped_params:
+                data["dropped_params"] = segmented.dropped_params
+            if segmented.finish_reasons:
+                data["finish_reason"] = segmented.finish_reasons[-1]
+                data["finish_reasons"] = segmented.finish_reasons
+            data["segmented_generation"] = segmented.meta
+            return ok_payload(request_id=request_id, data=data)
 
-    if parse_error is None:
-        data, coverage_warnings = _enforce_outline_chapter_coverage(
-            data=data,
-            target_chapter_count=prepared.target_chapter_count,
-        )
-        warnings.extend(coverage_warnings)
-        data, fill_warnings, fill_run_ids = _fill_outline_missing_chapters_with_llm(
-            data=data,
-            target_chapter_count=prepared.target_chapter_count,
+        _raise_if_canceled(cancel_event)
+        llm_result = call_llm_and_record(
+            logger=logger,
             request_id=request_id,
             actor_user_id=user_id,
             project_id=project_id,
+            chapter_id=None,
+            run_type="outline",
             api_key=str(prepared.resolved_api_key),
+            prompt_system=prepared.prompt_system,
+            prompt_user=prepared.prompt_user,
+            prompt_messages=prepared.prompt_messages,
+            prompt_render_log_json=prepared.prompt_render_log_json,
             llm_call=prepared.llm_call,
             run_params_extra_json=prepared.run_params_extra_json,
         )
-        warnings.extend(fill_warnings)
-        if fill_run_ids:
-            coverage = data.get("chapter_coverage")
-            if isinstance(coverage, dict):
-                coverage["fill_run_ids"] = fill_run_ids
-                data["chapter_coverage"] = coverage
 
-    warnings = _dedupe_warnings(warnings)
-    if warnings:
-        data["warnings"] = warnings
-    if parse_error is not None:
-        data["parse_error"] = parse_error
-    data["generation_run_id"] = llm_result.run_id
-    data["latency_ms"] = llm_result.latency_ms
-    if llm_result.dropped_params:
-        data["dropped_params"] = llm_result.dropped_params
-    if finish_reason is not None:
-        data["finish_reason"] = finish_reason
-    return ok_payload(request_id=request_id, data=data)
+        _raise_if_canceled(cancel_event)
+        raw_output = llm_result.text
+        finish_reason = llm_result.finish_reason
+        contract = contract_for_task("outline_generate")
+        parsed = contract.parse(raw_output, finish_reason=finish_reason)
+        data, warnings, parse_error = parsed.data, parsed.warnings, parsed.parse_error
+
+        if parse_error is not None and prepared.llm_call.provider in (
+            "openai",
+            "openai_responses",
+            "openai_compatible",
+            "openai_responses_compatible",
+        ):
+            try:
+                repair = build_repair_prompt_for_task("outline_generate", raw_output=raw_output)
+                if repair is None:
+                    raise AppError(code="OUTLINE_FIX_UNSUPPORTED", message="该任务不支持输出修复", status_code=400)
+                fix_system, fix_user, fix_run_type = repair
+                fix_call = with_param_overrides(prepared.llm_call, {"temperature": 0, "max_tokens": 1024})
+                fixed = call_llm_and_record(
+                    logger=logger,
+                    request_id=request_id,
+                    actor_user_id=user_id,
+                    project_id=project_id,
+                    chapter_id=None,
+                    run_type=fix_run_type,
+                    api_key=str(prepared.resolved_api_key),
+                    prompt_system=fix_system,
+                    prompt_user=fix_user,
+                    llm_call=fix_call,
+                    run_params_extra_json=prepared.run_params_extra_json,
+                )
+                fixed_parsed = contract.parse(fixed.text)
+                fixed_data, fixed_warnings, fixed_error = (
+                    fixed_parsed.data,
+                    fixed_parsed.warnings,
+                    fixed_parsed.parse_error,
+                )
+                if fixed_error is None and fixed_data.get("chapters"):
+                    fixed_data["raw_output"] = raw_output
+                    fixed_data["fixed_json"] = fixed_data.get("raw_json") or fixed.text
+                    data = fixed_data
+                    warnings.extend(["json_fixed_via_llm", *fixed_warnings])
+                    parse_error = None
+            except AppError as exc:
+                if exc.code == CANCEL_ERROR_CODE:
+                    raise
+                warnings.append("outline_fix_json_failed")
+
+        if parse_error is None:
+            _raise_if_canceled(cancel_event)
+            data, coverage_warnings = _enforce_outline_chapter_coverage(
+                data=data,
+                target_chapter_count=prepared.target_chapter_count,
+            )
+            warnings.extend(coverage_warnings)
+            data, fill_warnings, fill_run_ids = _fill_outline_missing_chapters_with_llm(
+                data=data,
+                target_chapter_count=prepared.target_chapter_count,
+                request_id=request_id,
+                actor_user_id=user_id,
+                project_id=project_id,
+                api_key=str(prepared.resolved_api_key),
+                llm_call=prepared.llm_call,
+                run_params_extra_json=prepared.run_params_extra_json,
+                cancel_event=cancel_event,
+            )
+            warnings.extend(fill_warnings)
+            if fill_run_ids:
+                coverage = data.get("chapter_coverage")
+                if isinstance(coverage, dict):
+                    coverage["fill_run_ids"] = fill_run_ids
+                    data["chapter_coverage"] = coverage
+
+        warnings = _dedupe_warnings(warnings)
+        if warnings:
+            data["warnings"] = warnings
+        if parse_error is not None:
+            data["parse_error"] = parse_error
+        data["generation_run_id"] = llm_result.run_id
+        data["latency_ms"] = llm_result.latency_ms
+        if llm_result.dropped_params:
+            data["dropped_params"] = llm_result.dropped_params
+        if finish_reason is not None:
+            data["finish_reason"] = finish_reason
+        return ok_payload(request_id=request_id, data=data)
+    finally:
+        cancel_event.set()
 
 
 @router.post("/projects/{project_id}/outline/generate-stream")
@@ -2561,6 +2634,7 @@ def generate_outline_stream(
     x_llm_api_key: str | None = Header(default=None, alias="X-LLM-API-Key", max_length=4096),
 ):
     request_id = request.state.request_id
+    cancel_event = threading.Event()
 
     def event_generator():
         yield sse_progress(message="准备生成...", progress=0)
@@ -2602,8 +2676,12 @@ def generate_outline_stream(
                 extra_json=run_params_extra_json,
             )
         except GeneratorExit:
+            cancel_event.set()
             return
         except AppError as exc:
+            if exc.code == CANCEL_ERROR_CODE:
+                cancel_event.set()
+                return
             yield sse_error(error=f"{exc.message} ({exc.code})", code=exc.status_code)
             yield sse_done()
             return
@@ -2648,6 +2726,7 @@ def generate_outline_stream(
                     prompt_user=prompt_user,
                     target_chapter_count=target_chapter_count,
                     run_params_extra_json=run_params_extra_json,
+                    cancel_event=cancel_event,
                     progress_hook=_on_segment_progress,
                 )
 
@@ -2656,6 +2735,7 @@ def generate_outline_stream(
                 last_snapshot_key: tuple[str, int, int, int] | None = None
                 last_raw_preview_key: tuple[str, int, int, int] | None = None
                 while True:
+                    _raise_if_canceled(cancel_event)
                     now = time.monotonic()
                     if now - last_ping >= OUTLINE_FILL_HEARTBEAT_INTERVAL_SECONDS:
                         yield sse_heartbeat()
@@ -2887,7 +2967,9 @@ def generate_outline_stream(
                         data = fixed_data
                         warnings.extend(["json_fixed_via_llm", *fixed_warnings])
                         parse_error = None
-                except AppError:
+                except AppError as exc:
+                    if exc.code == CANCEL_ERROR_CODE:
+                        raise
                     warnings.append("outline_fix_json_failed")
 
             if parse_error is None:
@@ -2922,6 +3004,7 @@ def generate_outline_stream(
                         api_key=str(resolved_api_key),
                         llm_call=llm_call,
                         run_params_extra_json=run_params_extra_json,
+                        cancel_event=cancel_event,
                         progress_hook=_on_fill_progress,
                     )
 
@@ -2929,6 +3012,7 @@ def generate_outline_stream(
                     last_message = ""
                     last_snapshot_marker: tuple[str, int] | None = None
                     while True:
+                        _raise_if_canceled(cancel_event)
                         now = time.monotonic()
                         if now - last_ping >= OUTLINE_FILL_HEARTBEAT_INTERVAL_SECONDS:
                             yield sse_heartbeat()
@@ -2999,8 +3083,12 @@ def generate_outline_stream(
             yield sse_result(result_data)
             yield sse_done()
         except GeneratorExit:
+            cancel_event.set()
             return
         except AppError as exc:
+            if exc.code == CANCEL_ERROR_CODE:
+                cancel_event.set()
+                return
             if (
                 llm_call is not None
                 and not stream_run_written

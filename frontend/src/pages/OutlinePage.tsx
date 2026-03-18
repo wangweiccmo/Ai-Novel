@@ -96,6 +96,7 @@ export function OutlinePage() {
   const [genStreamRawText, setGenStreamRawText] = useState("");
   const [genStreamPreviewJson, setGenStreamPreviewJson] = useState("");
   const genStreamClientRef = useRef<SSEPostClient | null>(null);
+  const genAbortRef = useRef<AbortController | null>(null);
   const genStreamHasChunkRef = useRef(false);
   const wizardRefreshTimerRef = useRef<number | null>(null);
   const savingRef = useRef(false);
@@ -440,6 +441,17 @@ export function OutlinePage() {
     setGenPreview(null);
   }, [confirm, createOutline, dirty, genPreview, projectId, save]);
 
+  const cancelGeneration = useCallback((opts?: { close?: boolean }) => {
+    genStreamClientRef.current?.abort();
+    genAbortRef.current?.abort();
+    genAbortRef.current = null;
+    setGenerating(false);
+    setGenStreamProgress(null);
+    setGenStreamRawText("");
+    setGenStreamPreviewJson("");
+    if (opts?.close) setGenModalOpen(false);
+  }, []);
+
   if (loading) return <div className="text-subtext">加载中...</div>;
 
   return (
@@ -632,10 +644,7 @@ export function OutlinePage() {
 
       <Modal
         open={genModalOpen}
-        onClose={() => {
-          genStreamClientRef.current?.abort();
-          setGenModalOpen(false);
-        }}
+        onClose={() => cancelGeneration({ close: true })}
         panelClassName="surface max-w-2xl p-6"
         ariaLabel="AI 生成大纲"
       >
@@ -646,10 +655,7 @@ export function OutlinePage() {
           </div>
           <button
             className="btn btn-secondary"
-            onClick={() => {
-              genStreamClientRef.current?.abort();
-              setGenModalOpen(false);
-            }}
+            onClick={() => cancelGeneration({ close: true })}
             type="button"
           >
             关闭
@@ -687,9 +693,10 @@ export function OutlinePage() {
               </label>
               <label className="grid gap-1 sm:col-span-3">
                 <span className="text-xs text-subtext">节奏</span>
-                <input
-                  className="input"
+                <textarea
+                  className="textarea"
                   name="pacing"
+                  rows={6}
                   value={genForm.pacing}
                   onChange={(e) => setGenForm((v) => ({ ...v, pacing: e.target.value }))}
                   placeholder="例如：前3章强钩子，中段升级，结尾反转"
@@ -787,10 +794,7 @@ export function OutlinePage() {
         <div className="mt-5 flex justify-end gap-2">
           <button
             className="btn btn-secondary"
-            onClick={() => {
-              genStreamClientRef.current?.abort();
-              setGenModalOpen(false);
-            }}
+            onClick={() => cancelGeneration({ close: true })}
             type="button"
           >
             取消
@@ -798,9 +802,7 @@ export function OutlinePage() {
           {genStreamEnabled && (generating || genStreamProgress?.status === "processing") ? (
             <button
               className="btn btn-secondary"
-              onClick={() => {
-                genStreamClientRef.current?.abort();
-              }}
+              onClick={() => cancelGeneration()}
               type="button"
             >
               取消生成
@@ -811,6 +813,8 @@ export function OutlinePage() {
             disabled={generating}
             onClick={async () => {
               if (!projectId || !preset) return;
+              genAbortRef.current?.abort();
+              genAbortRef.current = null;
               setGenerating(true);
               genStreamClientRef.current = null;
               genStreamHasChunkRef.current = false;
@@ -977,9 +981,12 @@ export function OutlinePage() {
                     toast.toastError("流式生成失败");
                   }
                 } else {
+                  const abortController = new AbortController();
+                  genAbortRef.current = abortController;
                   const res = await apiJson<OutlineGenResult>(`/api/projects/${projectId}/outline/generate`, {
                     method: "POST",
                     headers,
+                    signal: abortController.signal,
                     body: JSON.stringify(payload),
                   });
                   setGenPreview(res.data);
@@ -987,9 +994,14 @@ export function OutlinePage() {
                 }
               } catch (e) {
                 const err = e as ApiError;
+                if (err instanceof ApiError && err.code === "REQUEST_ABORTED") {
+                  toast.toastSuccess("已取消生成");
+                  return;
+                }
                 toast.toastError(`${err.message} (${err.code})`, err.requestId);
               } finally {
                 genStreamClientRef.current = null;
+                genAbortRef.current = null;
                 setGenerating(false);
               }
             }}
