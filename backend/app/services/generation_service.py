@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.core.errors import AppError
-from app.core.logging import exception_log_fields, log_event
+from app.core.logging import exception_log_fields, log_event, redact_secrets_text, safe_log_details
 from app.llm.client import call_llm, call_llm_messages
 from app.llm.messages import ChatMessage
 from app.models.llm_preset import LLMPreset
@@ -139,6 +139,7 @@ def call_llm_and_record(
         memory_retrieval_log_json=memory_retrieval_log_json,
         extra_json=run_params_extra_json,
     )
+    safe_base_url = redact_secrets_text(str(llm_call.base_url or ""))
     try:
         if prompt_messages is None:
             result = call_llm(
@@ -209,16 +210,21 @@ def call_llm_and_record(
         prompt_chars = len(prompt_system) + len(prompt_user)
         if prompt_messages is not None:
             prompt_chars = sum(len(m.content or "") for m in prompt_messages)
+        safe_details = safe_log_details(exc.details)
         log_event(
             logger,
             "error",
             llm={
                 "provider": llm_call.provider,
                 "model": llm_call.model,
+                "run_type": run_type,
+                "base_url": safe_base_url or None,
                 "timeout_seconds": llm_call.timeout_seconds,
+                "params": llm_call.params,
                 "prompt_chars": prompt_chars,
                 "output_chars": 0,
                 "error_code": exc.code,
+                "error_details": safe_details,
             },
         )
         run_id = write_generation_run(
@@ -259,7 +265,10 @@ def call_llm_and_record(
             llm={
                 "provider": llm_call.provider,
                 "model": llm_call.model,
+                "run_type": run_type,
+                "base_url": safe_base_url or None,
                 "timeout_seconds": llm_call.timeout_seconds,
+                "params": llm_call.params,
                 "prompt_chars": prompt_chars,
                 "output_chars": 0,
                 "error_code": "INTERNAL_ERROR",
