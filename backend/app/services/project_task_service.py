@@ -278,6 +278,14 @@ def schedule_worldbook_auto_update_task(
 
         event_type = "queued" if created_task else None
         if status_norm == "failed":
+            # Enforce hard retry limit on auto-retry
+            try:
+                _params = _compact_json_loads(task.params_json) if task.params_json else {}
+                _retry_count = int((_params or {}).get("retry_count") or 0) if isinstance(_params, dict) else 0
+            except Exception:
+                _retry_count = 0
+            if _retry_count >= 5:
+                return str(task.id)
             reset_project_task_to_queued(task=task, increment_retry_count=True)
             db.commit()
             event_type = "retry"
@@ -797,9 +805,24 @@ def retry_project_task(*, db: Session, task: ProjectTask) -> ProjectTask:
 
     Note: actual enqueue/worker execution is handled by the queue backend / worker entrypoint.
     """
+    MAX_RETRY_COUNT = 5
 
     status_norm = str(getattr(task, "status", "") or "").strip().lower()
     if status_norm != "failed":
+        return task
+
+    # Enforce hard retry limit
+    try:
+        params = _compact_json_loads(task.params_json) if task.params_json else {}
+        current_retry = int((params or {}).get("retry_count") or 0) if isinstance(params, dict) else 0
+    except Exception:
+        current_retry = 0
+    if current_retry >= MAX_RETRY_COUNT:
+        raise AppError(
+            code="TASK_RETRY_LIMIT",
+            message=f"任务已重试 {current_retry} 次，达到上限 {MAX_RETRY_COUNT}，请检查配置后重新创建任务",
+            status_code=422,
+        )
         return task
 
     reset_project_task_to_queued(task=task, increment_retry_count=True)
@@ -818,20 +841,23 @@ def retry_project_task(*, db: Session, task: ProjectTask) -> ProjectTask:
 
 def cancel_project_task(*, db: Session, task: ProjectTask) -> ProjectTask:
     """
-    Cancel a queued ProjectTask.
+    Cancel a queued or running ProjectTask.
 
     Contract:
-    - Only queued tasks are cancelable (idempotent no-op otherwise).
-    - Worker must skip execution when task.status == "canceled".
+    - Queued tasks are canceled immediately.
+    - Running tasks are marked "canceled" so the worker can detect it
+      at the next heartbeat and stop gracefully.
+    - Idempotent no-op for other statuses.
     """
 
     status_norm = str(getattr(task, "status", "") or "").strip().lower()
-    if status_norm != "queued":
+    if status_norm not in ("queued", "running"):
         return task
 
     task.status = "canceled"
-    task.started_at = None
-    task.heartbeat_at = None
+    if status_norm == "queued":
+        task.started_at = None
+        task.heartbeat_at = None
     task.finished_at = utc_now()
     task.updated_at = utc_now()
     task.result_json = _compact_json_dumps({"canceled": True})
@@ -1363,6 +1389,12 @@ def run_project_task(*, task_id: str) -> str:
             result = rebuild_fractal_memory(db=db, project_id=project_id, reason=reason2)
         else:
             raise ValueError(f"Unsupported ProjectTask.kind: {kind!r}")
+
+        # Re-read status before marking succeeded: task may have been canceled mid-execution
+        db.refresh(task)
+        if str(getattr(task, "status", "") or "").strip().lower() == "canceled":
+            log_event(logger, "info", event="PROJECT_TASK_CANCELED_DURING_EXECUTION", task_id=task_id, kind=kind)
+            return task_id
 
         task.status = "succeeded"
         task.result_json = _compact_json_dumps(redact_api_keys(result))

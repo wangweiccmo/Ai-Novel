@@ -213,6 +213,10 @@ def latest_project_task_event_seq(db: Session, *, project_id: str) -> int:
 
 
 def build_project_task_active_snapshot(db: Session, *, project_id: str, limit: int = 200) -> dict[str, Any]:
+    # Read cursor FIRST, then tasks. This ensures cursor <= any event that
+    # reflects the tasks we return.  If a new event is inserted between the
+    # two reads, the client will see it in the next poll (cursor < new seq).
+    cursor = latest_project_task_event_seq(db, project_id=project_id)
     rows = (
         db.execute(
             select(ProjectTask)
@@ -228,7 +232,7 @@ def build_project_task_active_snapshot(db: Session, *, project_id: str, limit: i
     )
     return {
         "project_id": project_id,
-        "cursor": latest_project_task_event_seq(db, project_id=project_id),
+        "cursor": cursor,
         "snapshot_at": _iso(utc_now()),
         "active_tasks": [project_task_event_task_payload(row) for row in rows],
     }

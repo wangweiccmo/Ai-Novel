@@ -314,7 +314,11 @@ def _load_match_candidates(
 
     q_expr = func.lower(literal(q))
     name_candidates = (
-        db.execute(base.where(q_expr.contains(func.lower(MemoryEntity.name))).order_by(MemoryEntity.updated_at.desc()))
+        db.execute(
+            base.where(MemoryEntity.name.isnot(None))
+            .where(q_expr.contains(func.lower(MemoryEntity.name)))
+            .order_by(MemoryEntity.updated_at.desc())
+        )
         .scalars()
         .all()
     )

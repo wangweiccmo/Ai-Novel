@@ -97,6 +97,11 @@ export function ProjectWizardPage() {
     });
   }, [project, settings, characters, outline, chapters, llmPreset, profiles, version]);
 
+  const llmReady = useMemo(() => {
+    const llmStep = progress.steps.find((s) => s.key === "llm");
+    return llmStep?.state === "done";
+  }, [progress.steps]);
+
   const goStep = useCallback(
     (step: WizardStep) => {
       if (!step.href) return;
@@ -272,6 +277,26 @@ export function ProjectWizardPage() {
         </div>
       </section>
 
+      {!llmReady ? (
+        <section className="rounded-atelier border border-warning/40 bg-warning/5 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-ink">还没有配置 AI 模型</div>
+              <div className="mt-1 text-xs text-subtext">
+                需要先配置模型（API Key）才能使用 AI 生成大纲和章节。
+              </div>
+            </div>
+            <button
+              className="btn btn-primary"
+              onClick={() => navigate(`/projects/${projectId}/prompts`)}
+              type="button"
+            >
+              立即配置
+            </button>
+          </div>
+        </section>
+      ) : null}
+
       <section className="panel p-6">
         <div className="grid gap-1">
           <div className="font-content text-xl">里程碑与待办</div>
@@ -343,13 +368,13 @@ export function ProjectWizardPage() {
             <div className="mt-3 flex flex-wrap gap-2">
               <button
                 className="btn btn-primary"
-                disabled={autoRunning}
+                disabled={autoRunning || !llmReady}
                 onClick={() => void autoOutlineAndChapters()}
                 type="button"
               >
                 <span className="inline-flex items-center gap-2">
                   <Wand2 size={18} />
-                  {autoRunning ? "运行中..." : "一键开工"}
+                  {autoRunning ? "运行中..." : !llmReady ? "需先配置模型" : "一键开工"}
                 </span>
               </button>
               <button className="btn btn-secondary" onClick={scrollToSteps} type="button">

@@ -241,14 +241,20 @@ def reclaim_unused_budget(
 # ---------------------------------------------------------------------------
 
 def _chars_to_tokens(chars: int) -> int:
-    """Approximate char→token conversion for budget purposes."""
+    """Approximate char→token conversion for budget purposes.
+
+    Uses a blended ratio that accounts for CJK-heavy content typical
+    in this application.  CJK chars ≈ 1 token each, Latin ≈ 3.5 chars/token.
+    A weighted average of ~1.8 chars/token is used (conservative for
+    mixed CJK/Latin text).
+    """
     if chars <= 0:
         return 0
-    return max(1, int(math.ceil(chars / 2.5)))
+    return max(1, int(math.ceil(chars / 1.8)))
 
 
 def _tokens_to_chars(tokens: int) -> int:
-    """Approximate token→char conversion for backward compatibility."""
+    """Approximate token→char conversion (inverse of _chars_to_tokens)."""
     if tokens <= 0:
         return 0
-    return max(1, int(tokens * 2.5))
+    return max(1, int(tokens * 1.8))

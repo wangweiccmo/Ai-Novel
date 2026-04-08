@@ -35,7 +35,11 @@
       "Bash(xargs ls:*)",
       "Bash(npx vite:*)",
       "Bash(grep -E \"\\\\.tsx$\")",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(python -c \"import py_compile; [py_compile.compile\\(f, doraise=True\\) for f in ['backend/app/services/memory_retrieval_service.py', 'backend/app/services/project_task_service.py', 'backend/app/services/project_task_event_service.py', 'backend/app/services/graph_context_service.py', 'backend/app/services/token_budget_allocator.py', 'backend/app/services/generation_pipeline.py']]\")",
+      "Bash(dir \"c:\\\\AI\\\\w\\\\Ai-Novel\\\\src\" /b)",
+      "Read(//mnt/c/AI/w/**)",
+      "Bash(npx eslint:*)"
     ]
   }
 }

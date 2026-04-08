@@ -69,6 +69,7 @@ export function useBatchGeneration(args: {
   const runtimeRefreshGuardRef = useRef(createRequestSeqGuard());
   const batchSyncTimerRef = useRef<number | null>(null);
   const batchApplyQueueRef = useRef<BatchGenerationTaskItem[]>([]);
+  const batchApplyingLockRef = useRef(false);
 
   useEffect(() => {
     batchTaskRef.current = batchTask;
@@ -431,22 +432,28 @@ export function useBatchGeneration(args: {
 
   const startNextBatchApply = useCallback(async () => {
     if (applyRunId) return;
-    const queue = batchApplyQueueRef.current;
-    while (queue.length > 0) {
-      const next = queue.shift();
-      if (!next || !next.chapter_id || !next.generation_run_id) continue;
-      const ok = await requestSelectChapter(next.chapter_id);
-      if (!ok) {
-        batchApplyQueueRef.current = [];
-        setBatchApplying(false);
+    if (batchApplyingLockRef.current) return;
+    batchApplyingLockRef.current = true;
+    try {
+      const queue = batchApplyQueueRef.current;
+      while (queue.length > 0) {
+        const next = queue.shift();
+        if (!next || !next.chapter_id || !next.generation_run_id) continue;
+        const ok = await requestSelectChapter(next.chapter_id);
+        if (!ok) {
+          batchApplyQueueRef.current = [];
+          setBatchApplying(false);
+          return;
+        }
+        const params = new URLSearchParams(searchParams);
+        params.set("applyRunId", next.generation_run_id);
+        setSearchParams(params, { replace: true });
         return;
       }
-      const params = new URLSearchParams(searchParams);
-      params.set("applyRunId", next.generation_run_id);
-      setSearchParams(params, { replace: true });
-      return;
+      setBatchApplying(false);
+    } finally {
+      batchApplyingLockRef.current = false;
     }
-    setBatchApplying(false);
   }, [applyRunId, requestSelectChapter, searchParams, setSearchParams]);
 
   useEffect(() => {

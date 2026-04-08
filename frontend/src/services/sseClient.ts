@@ -87,6 +87,9 @@ function notifyUnauthorized(requestId?: string) {
   }
 }
 
+/** Maximum time (ms) to wait between SSE chunks before considering the stream stalled. */
+const SSE_CHUNK_TIMEOUT_MS = 60_000;
+
 export class SSEPostClient {
   private url: string;
   private data: unknown;
@@ -163,7 +166,15 @@ export class SSEPostClient {
 
     try {
       while (true) {
-        const { done, value } = await reader.read();
+        const readPromise = reader.read();
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          const id = setTimeout(() => {
+            reject(new SSEError({ code: "SSE_TIMEOUT", message: "流式输出超时（60秒无数据）", requestId: this.requestId }));
+          }, SSE_CHUNK_TIMEOUT_MS);
+          // Clean up timer if read completes first
+          readPromise.then(() => clearTimeout(id), () => clearTimeout(id));
+        });
+        const { done, value } = await Promise.race([readPromise, timeoutPromise]);
         if (done) break;
         buffer += decoder.decode(value, { stream: true }).replaceAll("\r", "");
 

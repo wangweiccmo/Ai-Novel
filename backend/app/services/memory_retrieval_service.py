@@ -955,7 +955,13 @@ def retrieve_memory_context_pack(
         "graph": graph,
         "fractal": fractal,
     }
-    _dedup_result, _dedup_log = deduplicate_memory_sections(_dedup_sections)
+    try:
+        _dedup_result, _dedup_log = deduplicate_memory_sections(_dedup_sections)
+    except Exception:
+        import logging as _logging
+        _logging.getLogger("ainovel").warning("deduplicate_memory_sections failed, using original sections", exc_info=True)
+        _dedup_result = _dedup_sections
+        _dedup_log = []
     if _dedup_log:
         worldbook = _dedup_result.get("worldbook", worldbook)
         story_memory = _dedup_result.get("story_memory", story_memory)

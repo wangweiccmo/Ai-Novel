@@ -221,6 +221,7 @@ export function useChapterGeneration(args: {
       mode: "replace" | "append",
       overrides?: { macro_seed?: string | null; prompt_override?: GenerateForm["prompt_override"] },
     ) => {
+      if (generating) return;
       if (!activeChapter || !form) return;
       if (!preset) {
         toast.toastError("请先在 Prompts 页保存 LLM 配置");
@@ -691,7 +692,7 @@ export function useChapterGeneration(args: {
         setGenerating(false);
       }
     },
-    [activeChapter, chapters, confirm, dirty, form, genForm, preset, requestSelectChapter, saveChapter, setForm, toast],
+    [activeChapter, chapters, confirm, dirty, form, genForm, generating, preset, requestSelectChapter, saveChapter, setForm, toast],
   );
 
   return {

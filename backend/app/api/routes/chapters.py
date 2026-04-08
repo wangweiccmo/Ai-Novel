@@ -1549,27 +1549,31 @@ def generate_chapter(
 
         if raw_content:
             data["post_edit_raw_content_md"] = raw_content
-            step = run_post_edit_step(
-                logger=logger,
-                request_id=request_id,
-                actor_user_id=user_id,
-                project_id=project_id,
-                chapter_id=chapter_id,
-                api_key=str(resolved_api_key),
-                llm_call=llm_call,
-                render_values=render_values or {},
-                raw_content=raw_content,
-                macro_seed=f"{macro_seed}:post_edit",
-                post_edit_sanitize=bool(body.post_edit_sanitize),
-                run_params_extra_json={**(run_params_extra_json or {}), "post_edit_sanitize": bool(body.post_edit_sanitize)},
-            )
-            post_edit_warnings = step.warnings
-            post_edit_parse_error = step.parse_error
-            data["post_edit_run_id"] = step.run_id
-            data["post_edit_edited_content_md"] = step.edited_content_md
-            if step.applied:
-                data["content_md"] = step.edited_content_md
-                post_edit_applied = True
+            try:
+                step = run_post_edit_step(
+                    logger=logger,
+                    request_id=request_id,
+                    actor_user_id=user_id,
+                    project_id=project_id,
+                    chapter_id=chapter_id,
+                    api_key=str(resolved_api_key),
+                    llm_call=llm_call,
+                    render_values=render_values or {},
+                    raw_content=raw_content,
+                    macro_seed=f"{macro_seed}:post_edit",
+                    post_edit_sanitize=bool(body.post_edit_sanitize),
+                    run_params_extra_json={**(run_params_extra_json or {}), "post_edit_sanitize": bool(body.post_edit_sanitize)},
+                )
+                post_edit_warnings = step.warnings
+                post_edit_parse_error = step.parse_error
+                data["post_edit_run_id"] = step.run_id
+                data["post_edit_edited_content_md"] = step.edited_content_md
+                if step.applied:
+                    data["content_md"] = step.edited_content_md
+                    post_edit_applied = True
+            except Exception:
+                logger.warning("post_edit_step_exception, keeping raw content", exc_info=True)
+                post_edit_warnings.append("post_edit_exception")
         else:
             post_edit_warnings.append("post_edit_no_content")
 
@@ -1587,26 +1591,30 @@ def generate_chapter(
 
         if raw_content:
             data["content_optimize_raw_content_md"] = raw_content
-            step = run_content_optimize_step(
-                logger=logger,
-                request_id=request_id,
-                actor_user_id=user_id,
-                project_id=project_id,
-                chapter_id=chapter_id,
-                api_key=str(resolved_api_key),
-                llm_call=llm_call,
-                render_values=render_values or {},
-                raw_content=raw_content,
-                macro_seed=f"{macro_seed}:content_optimize",
-                run_params_extra_json={**(run_params_extra_json or {}), "content_optimize": True},
-            )
-            content_optimize_warnings = step.warnings
-            content_optimize_parse_error = step.parse_error
-            data["content_optimize_run_id"] = step.run_id
-            data["content_optimize_optimized_content_md"] = step.optimized_content_md
-            if step.applied:
-                data["content_md"] = step.optimized_content_md
-                content_optimize_applied = True
+            try:
+                step = run_content_optimize_step(
+                    logger=logger,
+                    request_id=request_id,
+                    actor_user_id=user_id,
+                    project_id=project_id,
+                    chapter_id=chapter_id,
+                    api_key=str(resolved_api_key),
+                    llm_call=llm_call,
+                    render_values=render_values or {},
+                    raw_content=raw_content,
+                    macro_seed=f"{macro_seed}:content_optimize",
+                    run_params_extra_json={**(run_params_extra_json or {}), "content_optimize": True},
+                )
+                content_optimize_warnings = step.warnings
+                content_optimize_parse_error = step.parse_error
+                data["content_optimize_run_id"] = step.run_id
+                data["content_optimize_optimized_content_md"] = step.optimized_content_md
+                if step.applied:
+                    data["content_md"] = step.optimized_content_md
+                    content_optimize_applied = True
+            except Exception:
+                logger.warning("content_optimize_step_exception, keeping current content", exc_info=True)
+                content_optimize_warnings.append("content_optimize_exception")
         else:
             content_optimize_warnings.append("content_optimize_no_content")
 
@@ -1718,6 +1726,7 @@ def generate_chapter_stream(
             )
             settings_row = db.get(ProjectSettings, project_id)
             values["context_optimizer_enabled"] = bool(getattr(settings_row, "context_optimizer_enabled", False))
+            yield sse_progress(message="加载记忆上下文...", progress=1)
             memory_preparation = _prepare_chapter_memory_injection(
                 db=db,
                 project_id=project_id,
@@ -1735,6 +1744,8 @@ def generate_chapter_stream(
             )
 
             mcp_cfg = _build_mcp_research_config(body)
+            if mcp_cfg.enabled:
+                yield sse_progress(message="MCP 资料搜集中...", progress=2)
             mcp_step = run_mcp_research_step(
                 logger=logger,
                 request_id=request_id,
@@ -2154,27 +2165,31 @@ def generate_chapter_stream(
                 if raw_content:
                     data["post_edit_raw_content_md"] = raw_content
                     yield sse_progress(message="润色中...", progress=95)
-                    step = run_post_edit_step(
-                        logger=logger,
-                        request_id=request_id,
-                        actor_user_id=user_id,
-                        project_id=project_id,
-                        chapter_id=chapter_id,
-                        api_key=str(resolved_api_key),
-                        llm_call=llm_call,
-                        render_values=render_values or {},
-                        raw_content=raw_content,
-                        macro_seed=f"{macro_seed}:post_edit",
-                        post_edit_sanitize=bool(body.post_edit_sanitize),
-                        run_params_extra_json={**(run_params_extra_json or {}), "post_edit_sanitize": bool(body.post_edit_sanitize)},
-                    )
-                    post_edit_warnings = step.warnings
-                    post_edit_parse_error = step.parse_error
-                    data["post_edit_run_id"] = step.run_id
-                    data["post_edit_edited_content_md"] = step.edited_content_md
-                    if step.applied:
-                        data["content_md"] = step.edited_content_md
-                        post_edit_applied = True
+                    try:
+                        step = run_post_edit_step(
+                            logger=logger,
+                            request_id=request_id,
+                            actor_user_id=user_id,
+                            project_id=project_id,
+                            chapter_id=chapter_id,
+                            api_key=str(resolved_api_key),
+                            llm_call=llm_call,
+                            render_values=render_values or {},
+                            raw_content=raw_content,
+                            macro_seed=f"{macro_seed}:post_edit",
+                            post_edit_sanitize=bool(body.post_edit_sanitize),
+                            run_params_extra_json={**(run_params_extra_json or {}), "post_edit_sanitize": bool(body.post_edit_sanitize)},
+                        )
+                        post_edit_warnings = step.warnings
+                        post_edit_parse_error = step.parse_error
+                        data["post_edit_run_id"] = step.run_id
+                        data["post_edit_edited_content_md"] = step.edited_content_md
+                        if step.applied:
+                            data["content_md"] = step.edited_content_md
+                            post_edit_applied = True
+                    except Exception:
+                        logger.warning("post_edit_step_exception in stream, keeping raw content", exc_info=True)
+                        post_edit_warnings.append("post_edit_exception")
                 else:
                     post_edit_warnings.append("post_edit_no_content")
 
@@ -2193,26 +2208,30 @@ def generate_chapter_stream(
                 if raw_content:
                     data["content_optimize_raw_content_md"] = raw_content
                     yield sse_progress(message="正文优化中...", progress=97)
-                    step = run_content_optimize_step(
-                        logger=logger,
-                        request_id=request_id,
-                        actor_user_id=user_id,
-                        project_id=project_id,
-                        chapter_id=chapter_id,
-                        api_key=str(resolved_api_key),
-                        llm_call=llm_call,
-                        render_values=render_values or {},
-                        raw_content=raw_content,
-                        macro_seed=f"{macro_seed}:content_optimize",
-                        run_params_extra_json={**(run_params_extra_json or {}), "content_optimize": True},
-                    )
-                    content_optimize_warnings = step.warnings
-                    content_optimize_parse_error = step.parse_error
-                    data["content_optimize_run_id"] = step.run_id
-                    data["content_optimize_optimized_content_md"] = step.optimized_content_md
-                    if step.applied:
-                        data["content_md"] = step.optimized_content_md
-                        content_optimize_applied = True
+                    try:
+                        step = run_content_optimize_step(
+                            logger=logger,
+                            request_id=request_id,
+                            actor_user_id=user_id,
+                            project_id=project_id,
+                            chapter_id=chapter_id,
+                            api_key=str(resolved_api_key),
+                            llm_call=llm_call,
+                            render_values=render_values or {},
+                            raw_content=raw_content,
+                            macro_seed=f"{macro_seed}:content_optimize",
+                            run_params_extra_json={**(run_params_extra_json or {}), "content_optimize": True},
+                        )
+                        content_optimize_warnings = step.warnings
+                        content_optimize_parse_error = step.parse_error
+                        data["content_optimize_run_id"] = step.run_id
+                        data["content_optimize_optimized_content_md"] = step.optimized_content_md
+                        if step.applied:
+                            data["content_md"] = step.optimized_content_md
+                            content_optimize_applied = True
+                    except Exception:
+                        logger.warning("content_optimize_step_exception in stream, keeping current content", exc_info=True)
+                        content_optimize_warnings.append("content_optimize_exception")
                 else:
                     content_optimize_warnings.append("content_optimize_no_content")
 
